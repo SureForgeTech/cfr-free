@@ -20,7 +20,7 @@ export type ToolResult = {
  * sanitized message only (documented guidance verbatim, everything else the
  * fixed generic — src/mcp/client-safe.ts). Every tool handler goes through
  * this wrapper, so the contract exists once: a change to the error shape
- * cannot be made nine times, and no copy can be missed.
+ * cannot be made ten times, and no copy can be missed.
  */
 export async function runTool(
   logger: Logger,

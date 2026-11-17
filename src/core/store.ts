@@ -232,6 +232,13 @@ export interface StoreOpenOptions {
   /** Override the busy-wait timeout (tests use a short one). */
   readonly busyTimeoutMs?: number;
   /**
+   * Open an existing index without creating directories, changing its journal
+   * mode, creating tables, or upgrading its schema. SQLite's native read-only
+   * open blocks writes and missing-file creation. Only read paths that treat
+   * the file as evidence (comparison, verification) may set this.
+   */
+  readonly readOnly?: boolean;
+  /**
    * Adopt an OLDER schema version (0 < version < SCHEMA_VERSION) instead of
    * failing. Only the sync path may set this: `syncIndex` immediately
    * wholesale-rebuilds every row via replaceAllWithBaseline, so adoption is
@@ -341,6 +348,24 @@ FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
 WHERE sections_fts MATCH ? AND s.citation = ? COLLATE NOCASE AND s.title = ?
 LIMIT 1`;
+
+/**
+ * Version check for a read-only evidence open: never adopt or repair the file.
+ * Snapshot readers need the current v3 shape (the title column is part of
+ * their read path), and any older/newer file is rejected with the same
+ * rebuild guidance as the strict mutable open.
+ */
+function ensureReadOnlySchemaVersion(db: DatabaseSync): void {
+  const versionRow = db.prepare('PRAGMA user_version').get() as Record<string, unknown> | undefined;
+  const version = Number(versionRow?.['user_version'] ?? 0);
+  if (version === SCHEMA_VERSION) return;
+  throw new StoreError(
+    `index schema version ${version} is not supported for read-only snapshot comparison ` +
+      `(expected ${SCHEMA_VERSION}, the v3 multi-title snapshot shape); export a fresh snapshot ` +
+      'copy with a current cfr-free release — re-syncing changes the live index and cannot ' +
+      'recreate this stored revision',
+  );
+}
 
 /**
  * Ensure the on-disk schema version is compatible; adopt legacy files.
@@ -556,6 +581,65 @@ function refuseForeignDatabase(db: DatabaseSync): void {
   }
 }
 
+function prepareDatabaseTarget(filePath: string, readOnly: boolean): string {
+  const directory = path.dirname(filePath);
+  if (!readOnly && directory.length > 0 && directory !== '.') {
+    mkdirSync(directory, { recursive: true });
+  }
+  return filePath;
+}
+
+function assertQuickCheck(db: DatabaseSync): void {
+  const check = db.prepare('PRAGMA quick_check').get() as Record<string, unknown> | undefined;
+  const result = check ? String(Object.values(check)[0] ?? '') : '';
+  if (result !== 'ok') throw new StoreError(`integrity check failed: ${result || 'no result'}`);
+}
+
+function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync {
+  const readOnly = options.readOnly ?? false;
+  const sqliteTarget = prepareDatabaseTarget(filePath, readOnly);
+
+  const db = readOnly
+    ? new DatabaseSync(sqliteTarget, { readOnly: true })
+    : new DatabaseSync(sqliteTarget);
+  try {
+    // The file is an INPUT: `export` exists so an index can be handed to
+    // someone else, and `CFR_INDEX_PATH` can name any file. Views and
+    // triggers stored in a schema we did not write must not be allowed to
+    // call SQL functions on our behalf, so the schema is not trusted. Set
+    // before anything reads it.
+    db.exec('PRAGMA trusted_schema = OFF');
+    refuseForeignDatabase(db);
+    // A read-only evidence open must not rewrite a delete-mode snapshot's
+    // header just to prefer WAL; that mutation belongs to the owner/sync.
+    if (!readOnly) db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
+    // Pinned explicitly (node:sqlite currently defaults it on, but the
+    // section_references ON DELETE CASCADE wipe depends on it — never let
+    // that hinge on a driver default).
+    db.exec('PRAGMA foreign_keys = ON');
+    // Wait for a concurrent writer (e.g. a second sync) instead of failing
+    // instantly with a cryptic SQLITE_BUSY.
+    db.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS}`);
+    assertQuickCheck(db);
+    if (readOnly) {
+      ensureReadOnlySchemaVersion(db);
+    } else {
+      db.exec(SCHEMA_SQL);
+      ensureSchemaVersion(db, options.allowSchemaUpgrade ?? false);
+    }
+    return db;
+  } catch (error) {
+    // Do not hold the file (or its descriptor) open after a refusal.
+    try {
+      db.close();
+    } catch {
+      // already closed, or never opened
+    }
+    throw error;
+  }
+}
+
 export class Store {
   private readonly db: DatabaseSync;
   private readonly statements = new Map<string, Statement>();
@@ -572,41 +656,9 @@ export class Store {
    * @throws {StoreError} when the file fails its integrity check.
    */
   static open(filePath: string, options: StoreOpenOptions = {}): Store {
-    const directory = path.dirname(filePath);
-    if (directory.length > 0 && directory !== '.') mkdirSync(directory, { recursive: true });
-
-    let db: DatabaseSync | undefined;
     try {
-      db = new DatabaseSync(filePath);
-      // The file is an INPUT: `export` exists so an index can be handed to
-      // someone else, and `CFR_INDEX_PATH` can name any file. Views and
-      // triggers stored in a schema we did not write must not be allowed to
-      // call SQL functions on our behalf, so the schema is not trusted. Set
-      // before anything reads it.
-      db.exec('PRAGMA trusted_schema = OFF');
-      refuseForeignDatabase(db);
-      db.exec('PRAGMA journal_mode = WAL');
-      db.exec('PRAGMA synchronous = NORMAL');
-      // Pinned explicitly (node:sqlite currently defaults it on, but the
-      // section_references ON DELETE CASCADE wipe depends on it — never let
-      // that hinge on a driver default).
-      db.exec('PRAGMA foreign_keys = ON');
-      // Wait for a concurrent writer (e.g. a second sync) instead of failing
-      // instantly with a cryptic SQLITE_BUSY.
-      db.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS}`);
-      const check = db.prepare('PRAGMA quick_check').get() as Record<string, unknown> | undefined;
-      const result = check ? String(Object.values(check)[0] ?? '') : '';
-      if (result !== 'ok') throw new StoreError(`integrity check failed: ${result || 'no result'}`);
-      db.exec(SCHEMA_SQL);
-      ensureSchemaVersion(db, options.allowSchemaUpgrade ?? false);
-      return new Store(db, filePath);
+      return new Store(openDatabase(filePath, options), filePath);
     } catch (error) {
-      // Do not hold the file (or its descriptor) open after a refusal.
-      try {
-        db?.close();
-      } catch {
-        // already closed, or never opened
-      }
       if (error instanceof StoreError) {
         throw new StoreError(`cannot open index at ${filePath}: ${error.message}`);
       }
@@ -860,6 +912,51 @@ export class Store {
       }
     }
     return hashes;
+  }
+
+  /**
+   * SHA-256 of every provision's text+heading for ONE title, optionally
+   * scoped to one part — the offline snapshot-comparison read path. Same
+   * batched read as {@link captureTextHashes}; the citation key is unique
+   * per title, so the map is unambiguous within its scope.
+   */
+  snapshotTextHashes(title: number, part?: string): Map<string, string> {
+    const sql =
+      part === undefined
+        ? `SELECT id, citation, text, heading FROM sections
+           WHERE title = ? AND id > ? ORDER BY id LIMIT 500`
+        : `SELECT id, citation, text, heading FROM sections
+           WHERE title = ? AND part = ? AND id > ? ORDER BY id LIMIT 500`;
+    const hashes = new Map<string, string>();
+    const statement = this.stmt(sql);
+    let cursor = -1;
+    for (;;) {
+      const rows = (
+        part === undefined ? statement.all(title, cursor) : statement.all(title, part, cursor)
+      ) as Record<string, unknown>[];
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        hashes.set(
+          String(row['citation']),
+          hashContent(String(row['text']), String(row['heading'])),
+        );
+        cursor = Number(row['id']);
+      }
+    }
+    return hashes;
+  }
+
+  /**
+   * The row for one citation of one title, either kind. `UNIQUE (title,
+   * citation)` bounds the answer to a single row, so a kind-agnostic lookup
+   * is unambiguous — the offline snapshot comparison resolves the kind from
+   * the row it gets back.
+   */
+  getProvision(citation: string, title: number = DEFAULT_TITLE): SectionRow | null {
+    const row = this.stmt(
+      'SELECT * FROM sections WHERE citation = ? COLLATE NOCASE AND title = ? LIMIT 1',
+    ).get(citation, title) as Record<string, unknown> | undefined;
+    return row ? toSectionRow(row) : null;
   }
 
   private countMatches(ftsQuery: string, filters: readonly SearchFilter[]): number {

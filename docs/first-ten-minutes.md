@@ -27,21 +27,21 @@ your machine:
 | What your machine has                                    | Route                                                                | What it costs                                          |
 | -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
 | Docker, no Node                                          | [Docker](../README.md#1-docker-nothing-to-install)                   | a container; the index lives in a volume               |
-| Node ≥ 22.5 and npm                                      | [npm](../README.md#2-from-npm-no-compiler-no-docker)                 | nothing to compile — the published tarball ships built |
+| Node ≥ 22.13 and npm                                     | [npm](../README.md#2-from-npm-no-compiler-no-docker)                 | nothing to compile — the published tarball ships built |
 | Node, and you want one pinned release                    | [Release tarball](../README.md#3-from-a-release-tarball-no-compiler) | nothing to compile; the URL pins the version           |
 | A compiler, and you want the git tree without a checkout | [GitHub](../README.md#4-from-github-no-publish-step)                 | the first run compiles the project                     |
 | You intend to change the code                            | [Source checkout](../README.md#5-from-a-source-checkout)             | `npm ci` and a build                                   |
 
 Three things the README records, kept here so they are not lost along the way:
 
-- **Node ≥ 22.5 is required** by every route but Docker — the index runs on
+- **Node ≥ 22.13 is required** by every route but Docker — the index runs on
   the built-in `node:sqlite` module.
 - **`npm install -g github:SureForgeTech/sureforge-cfr` does not work.** npm itself
   leaves a command on PATH that does not run (measured; the README has the
   details). Use `npx`, a project-local install, the npm route or Docker.
 - **The routes are not all the same version of the tool**: npm gives the
   latest **published** release (0.2.1, checked 2026-11-01), the GitHub route
-  compiles the default branch (0.2.2 at this commit), a checkout runs the tree
+  compiles the default branch (0.2.3 at this commit), a checkout runs the tree
   you have, and the Docker image carries whatever its tag was built from. The
   differences are small today, but a step's output can differ from the
   examples below.
@@ -239,7 +239,7 @@ section reads and copy-a-citation over the same JSON API.
   `claude mcp add cfr-free -- npx -y cfr-free mcp`.
 - **Your own scripts**: the [HTTP API](../README.md#http-api) and its
   [OpenAPI contract](openapi.yaml).
-- **Other assistants**: the nine [MCP tools](../README.md#mcp-tools) — six
+- **Other assistants**: the ten [MCP tools](../README.md#mcp-tools) — seven
   offline index-backed ones, three that fetch from eCFR per call.
 - **Backups**: `cfr-free export ./backup.sqlite` writes a consistent snapshot
   of the index; it refuses to overwrite an existing file (exit 5).
@@ -256,7 +256,7 @@ section reads and copy-a-citation over the same JSON API.
 | ``index at … is empty — run `cfr-free sync` first``                       | 3    | no index yet, and auto-sync is off (`CFR_AUTO_SYNC=0`) | run `cfr-free sync`, or unset `CFR_AUTO_SYNC`     |
 | `unknown option for search: --part`                                       | 2    | the CLI search takes a query only                      | use the HTTP API or the MCP tool for filters      |
 | `invalid input: query: Too small: expected string to have >=3 characters` | 1    | the query is too short — npm 0.2.1                     | use a longer query                                |
-| `the search query needs at least 3 characters`                            | 2    | the query is too short — checkout 0.2.2                | use a longer query                                |
+| `the search query needs at least 3 characters`                            | 2    | the query is too short — checkout 0.2.3                | use a longer query                                |
 | `port 8787 is already in use`                                             | 4    | the bind failed                                        | set `CFR_PORT`                                    |
 | `refusing to overwrite existing file`                                     | 5    | `export` will not clobber                              | remove the file or choose another path            |
 | `npm install -g github:…` leaves a command that does not run              | —    | npm’s own failure, measured on npm 11.20.0             | use `npx`, a project-local install, npm or Docker |
@@ -264,7 +264,7 @@ section reads and copy-a-citation over the same JSON API.
 The two short-query rows are version-specific: the CLI prints every failure
 as `cfr-free: <message>`. npm 0.2.1 checks the query after the index is built,
 so on a machine with no index yet it downloads the corpus first, then prints
-the `Too small` message and exits 1. The 0.2.2 checkout refuses the query
+the `Too small` message and exits 1. The 0.2.3 checkout refuses the query
 before it opens the index — no download — and exits 2. Every other row is the
 same in both versions.
 

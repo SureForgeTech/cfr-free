@@ -1,0 +1,383 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import type { Logger } from '../logger.js';
+import { CHANGE_LIST_CAP, diffHashes } from './changes.js';
+import { assertIssueDate } from './diff.js';
+import { ServiceError } from './errors.js';
+import {
+  lcsHunks,
+  MAX_REDLINE_LINES,
+  presenceHunks,
+  splitRedlineLines,
+  type Hunk,
+} from './redline.js';
+import { DEFAULT_TITLE, Store, type SectionRow } from './store.js';
+import { datedSourceUrlFor } from './urls.js';
+import { IMAGE_MARKER_PREFIX } from './xml.js';
+
+/**
+ * Offline comparison of two STORED snapshots of the index: "what was added,
+ * removed or changed in Title 38 between the revision this file holds and
+ * the revision that one holds?". A snapshot is any cfr-free index file —
+ * typically a copy kept with `cfr-free export <path>` — and each records the
+ * eCFR issue date it was built from, so the two dates the comparison reports
+ * are RECORDED dates, not selectors.
+ *
+ * This is the offline counterpart of the `diff_issues` MCP tool: that one
+ * fetches both revisions from the live versioner on demand and reports
+ * citation lists only; this one reads two files the operator already stored,
+ * works with no network access and no eCFR client, and carries a short
+ * line-level summary, the hierarchy path and a dated source URL per change.
+ * Obtaining a snapshot stays a separate, explicit step (`cfr-free sync` to
+ * refresh the index, `cfr-free export <path>` to store a copy of it).
+ */
+
+/** Entries listed per category on the wire; counts beyond the cap set `truncated`. */
+export const SNAPSHOT_CHANGE_CAP = CHANGE_LIST_CAP;
+
+/** Changed lines shown in one entry's summary; more set the summary's `truncated` flag. */
+export const SUMMARY_HUNK_CAP = 10;
+
+/** Per-hunk character bound; a provision line can approach the parser's whole-section cap. */
+const SUMMARY_HUNK_CHARS = 1_000;
+
+/** Per-entry character bound across the shown hunks. */
+const SUMMARY_TOTAL_CHARS = 2_500;
+
+/** Per-side character bound of a coarse summary block (a provision over the line LCS cap). */
+const SUMMARY_BLOCK_CHARS = 1_000;
+
+/** One side of the comparison: the file and the issue date it records. */
+export interface SnapshotSide {
+  /** The snapshot file, resolved against the working directory. */
+  readonly path: string;
+  /** The eCFR issue date recorded in the snapshot's meta (its revision stamp). */
+  readonly issueDate: string;
+}
+
+/** The short line-level difference attached to one change entry. */
+export interface ChangeSummary {
+  /**
+   * The differing lines (never 'same' entries). Anchors are 1-based line
+   * numbers into that side's text; `null` marks the side the line is absent
+   * from. A provision over {@link MAX_REDLINE_LINES} on either side falls
+   * back to two excerpt blocks (from-side deletion, to-side addition).
+   */
+  readonly hunks: readonly Hunk[];
+  /** True when differing lines exist that the summary does not show. */
+  readonly truncated: boolean;
+}
+
+/** One provision that differs between the two snapshots. */
+export interface SnapshotChange {
+  readonly citation: string;
+  readonly kind: 'section' | 'appendix';
+  /** The heading at the to-side (the only side for an added provision). */
+  readonly heading: string;
+  /** True when the heading differs across the two snapshots (a retitle). */
+  readonly headingChanged: boolean;
+  /** The from-side heading when `headingChanged`, else null. */
+  readonly previousHeading: string | null;
+  /** The authority hierarchy the provision sits in (to-side; from-side for a removal). */
+  readonly chapter: string | null;
+  readonly part: string | null;
+  readonly subpart: string | null;
+  readonly path: string;
+  /** Both snapshots' recorded issue dates — the two revisions being compared. */
+  readonly fromIssueDate: string;
+  readonly toIssueDate: string;
+  /** The dated eCFR permalink at the from-side revision; null for an addition. */
+  readonly fromSourceUrl: string | null;
+  /** The dated eCFR permalink at the to-side revision; null for a removal. */
+  readonly toSourceUrl: string | null;
+  /**
+   * True when either side's text carries an image-content marker: the
+   * provision's rating-table graphics are not in the text, so the summary
+   * (like the stored text itself) is not complete coverage.
+   */
+  readonly imageContent: boolean;
+  readonly summary: ChangeSummary;
+}
+
+/** The comparison result: three sorted category lists plus both sides' identities. */
+export interface SnapshotComparison {
+  readonly from: SnapshotSide;
+  readonly to: SnapshotSide;
+  /** The part filter the comparison ran under, or null for the whole title. */
+  readonly part: string | null;
+  readonly added: readonly SnapshotChange[];
+  readonly removed: readonly SnapshotChange[];
+  readonly changed: readonly SnapshotChange[];
+  /** True when any category list was cut at {@link SNAPSHOT_CHANGE_CAP}. */
+  readonly truncated: boolean;
+}
+
+/** Cut a coarse summary block at the character bound, on a nearby line boundary. */
+function clipBlock(text: string): string {
+  if (text.length <= SUMMARY_BLOCK_CHARS) return text;
+  const cut = text.slice(0, SUMMARY_BLOCK_CHARS);
+  const lastBreak = cut.lastIndexOf('\n');
+  return lastBreak > SUMMARY_BLOCK_CHARS / 2 ? cut.slice(0, lastBreak) : cut;
+}
+
+/** Bound one provision summary: per-hunk, then a total budget across the shown hunks. */
+function boundedHunks(hunks: readonly Hunk[], alreadyTruncated: boolean): ChangeSummary {
+  const bounded: Hunk[] = [];
+  let used = 0;
+  let truncated = alreadyTruncated;
+  for (const hunk of hunks) {
+    let text = hunk.text;
+    if (text.length > SUMMARY_HUNK_CHARS) {
+      text = `${text.slice(0, SUMMARY_HUNK_CHARS)}…`;
+      truncated = true;
+    }
+    if (bounded.length > 0 && used + text.length > SUMMARY_TOTAL_CHARS) {
+      truncated = true;
+      break;
+    }
+    bounded.push({ ...hunk, text });
+    used += text.length;
+  }
+  return { hunks: bounded, truncated };
+}
+
+/** The summary of a provision present on only one side: an excerpt of its lines. */
+function presenceSummary(text: string, presentSide: 'from' | 'to'): ChangeSummary {
+  const lines = splitRedlineLines(text);
+  return boundedHunks(
+    presenceHunks(lines.slice(0, SUMMARY_HUNK_CAP), presentSide),
+    lines.length > SUMMARY_HUNK_CAP,
+  );
+}
+
+/** The summary of a provision present on both sides with differing content. */
+function changedSummary(fromText: string, toText: string): ChangeSummary {
+  const fromLines = splitRedlineLines(fromText);
+  const toLines = splitRedlineLines(toText);
+  if (fromLines.length > MAX_REDLINE_LINES || toLines.length > MAX_REDLINE_LINES) {
+    // Over the line LCS cap: no per-line identity is claimed — the summary
+    // carries one excerpt block per side, the redline's coarse shape cut to
+    // a short bound.
+    return boundedHunks(
+      [
+        { fromLine: 1, toLine: null, type: 'del', text: clipBlock(fromText) },
+        { fromLine: null, toLine: 1, type: 'add', text: clipBlock(toText) },
+      ],
+      true,
+    );
+  }
+  const differing = lcsHunks(fromLines, toLines).filter((hunk) => hunk.type !== 'same');
+  return boundedHunks(differing.slice(0, SUMMARY_HUNK_CAP), differing.length > SUMMARY_HUNK_CAP);
+}
+
+/**
+ * The from-side input a change entry needs: its row (absent for an addition)
+ * plus the snapshot's recorded issue date.
+ */
+interface SideContext {
+  readonly issueDate: string;
+  readonly row: SectionRow | null;
+}
+
+/** Build an added/removed entry: the row on the present side, with an excerpt of its text. */
+function presenceChange(
+  citation: string,
+  from: SideContext,
+  to: SideContext,
+  status: 'added' | 'removed',
+): SnapshotChange {
+  const present = status === 'added' ? to.row : from.row;
+  if (present === null) {
+    // Unreachable: diffHashes reports an addition/removal only for a
+    // citation present on exactly one side.
+    throw new Error(`snapshot comparison lost the row for ${citation}`);
+  }
+  return {
+    citation,
+    kind: present.kind,
+    heading: present.heading,
+    headingChanged: false,
+    previousHeading: null,
+    chapter: present.chapter,
+    part: present.part,
+    subpart: present.subpart,
+    path: present.path,
+    fromIssueDate: from.issueDate,
+    toIssueDate: to.issueDate,
+    fromSourceUrl:
+      status === 'added' ? null : datedSourceUrlFor(citation, present.kind, from.issueDate),
+    toSourceUrl:
+      status === 'added' ? datedSourceUrlFor(citation, present.kind, to.issueDate) : null,
+    imageContent: present.text.includes(IMAGE_MARKER_PREFIX),
+    summary: presenceSummary(present.text, status === 'added' ? 'to' : 'from'),
+  };
+}
+
+/** Build a changed entry: both rows, a changed-lines summary, retitle surfaced. */
+function changedChange(citation: string, from: SideContext, to: SideContext): SnapshotChange {
+  if (from.row === null || to.row === null) {
+    // Unreachable: diffHashes reports a change only for a citation present
+    // on both sides.
+    throw new Error(`snapshot comparison lost a side for ${citation}`);
+  }
+  const headingChanged = from.row.heading !== to.row.heading;
+  return {
+    citation,
+    kind: to.row.kind,
+    heading: to.row.heading,
+    headingChanged,
+    previousHeading: headingChanged ? from.row.heading : null,
+    chapter: to.row.chapter,
+    part: to.row.part,
+    subpart: to.row.subpart,
+    path: to.row.path,
+    fromIssueDate: from.issueDate,
+    toIssueDate: to.issueDate,
+    fromSourceUrl: datedSourceUrlFor(citation, to.row.kind, from.issueDate),
+    toSourceUrl: datedSourceUrlFor(citation, to.row.kind, to.issueDate),
+    imageContent:
+      from.row.text.includes(IMAGE_MARKER_PREFIX) || to.row.text.includes(IMAGE_MARKER_PREFIX),
+    summary: changedSummary(from.row.text, to.row.text),
+  };
+}
+
+/** Resolve and preflight one snapshot argument: it must exist and be openable. */
+function openSnapshot(resolved: string, label: string): Store {
+  if (!existsSync(resolved)) {
+    throw new ServiceError(
+      `no snapshot at ${resolved} — store one first with \`cfr-free export <path>\``,
+      'invalid_input',
+    );
+  }
+  try {
+    // STRICT, read-only open (no creation, journal-mode rewrite, schema
+    // creation, or upgrade), same adoption contract as export: a comparison
+    // never repairs or alters the files it reads.
+    return Store.open(resolved, { readOnly: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ServiceError(
+      `${label} snapshot: cannot open ${resolved}: ${detail}`,
+      'invalid_input',
+    );
+  }
+}
+
+/** The recorded issue date of a snapshot, rejecting files that record none. */
+function snapshotIssueDate(store: Store, filePath: string): string {
+  // Per-title key first (multi-title indexes), the legacy key as fallback
+  // for snapshots stored before it existed.
+  const issueDate =
+    store.getMeta(`title.${DEFAULT_TITLE}.issue_date`) ?? store.getMeta('issue_date');
+  if (issueDate === null) {
+    throw new ServiceError(
+      `snapshot at ${filePath} records no issue date — it is not a synced cfr-free index`,
+      'invalid_input',
+    );
+  }
+  return assertIssueDate(issueDate, `snapshot issue date at ${filePath}`);
+}
+
+/**
+ * Compare two stored snapshots of the Title 38 index and report the
+ * provision-level differences. Fully offline: both files are opened
+ * read-only (strict schema) and nothing is fetched or written.
+ *
+ * @throws {ServiceError} (`invalid_input`) when a path is missing, names the
+ *   same file on both sides, names a file that is not a cfr-free snapshot, or
+ *   names a snapshot that records no issue date.
+ */
+export function compareSnapshots(
+  deps: { readonly logger: Logger },
+  fromPath: string,
+  toPath: string,
+  options: { readonly part?: string | undefined } = {},
+): SnapshotComparison {
+  const fromResolved = path.resolve(fromPath);
+  const toResolved = path.resolve(toPath);
+  if (fromResolved === toResolved) {
+    throw new ServiceError(
+      `from and to snapshots are the same file (${fromResolved}) — pass two different snapshots`,
+      'invalid_input',
+    );
+  }
+  const fromStore = openSnapshot(fromResolved, 'from');
+  try {
+    const toStore = openSnapshot(toResolved, 'to');
+    try {
+      const part = options.part ?? null;
+      const fromIssueDate = snapshotIssueDate(fromStore, fromStore.path);
+      const toIssueDate = snapshotIssueDate(toStore, toStore.path);
+      if (fromIssueDate > toIssueDate) {
+        throw new ServiceError(
+          `from snapshot records ${fromIssueDate}, after the to snapshot's ${toIssueDate} — pass the earlier stored snapshot as from_snapshot`,
+          'invalid_input',
+        );
+      }
+      deps.logger.info('comparing stored snapshots', {
+        from: fromStore.path,
+        to: toStore.path,
+        part,
+      });
+
+      const diff = diffHashes(
+        fromStore.snapshotTextHashes(DEFAULT_TITLE, options.part),
+        toStore.snapshotTextHashes(DEFAULT_TITLE, options.part),
+      );
+
+      const fromSide = (citation: string): SideContext => ({
+        issueDate: fromIssueDate,
+        row: fromStore.getProvision(citation),
+      });
+      const toSide = (citation: string): SideContext => ({
+        issueDate: toIssueDate,
+        row: toStore.getProvision(citation),
+      });
+
+      const truncated =
+        diff.changed.length > SNAPSHOT_CHANGE_CAP ||
+        diff.added.length > SNAPSHOT_CHANGE_CAP ||
+        diff.removed.length > SNAPSHOT_CHANGE_CAP;
+      const result: SnapshotComparison = {
+        from: { path: fromStore.path, issueDate: fromIssueDate },
+        to: { path: toStore.path, issueDate: toIssueDate },
+        part,
+        added: diff.added
+          .slice(0, SNAPSHOT_CHANGE_CAP)
+          .map((citation) =>
+            presenceChange(
+              citation,
+              { issueDate: fromIssueDate, row: null },
+              toSide(citation),
+              'added',
+            ),
+          ),
+        removed: diff.removed
+          .slice(0, SNAPSHOT_CHANGE_CAP)
+          .map((citation) =>
+            presenceChange(
+              citation,
+              fromSide(citation),
+              { issueDate: toIssueDate, row: null },
+              'removed',
+            ),
+          ),
+        changed: diff.changed
+          .slice(0, SNAPSHOT_CHANGE_CAP)
+          .map((citation) => changedChange(citation, fromSide(citation), toSide(citation))),
+        truncated,
+      };
+      deps.logger.info('snapshot comparison computed', {
+        changed: diff.changed.length,
+        added: diff.added.length,
+        removed: diff.removed.length,
+        truncated,
+      });
+      return result;
+    } finally {
+      toStore.close();
+    }
+  } finally {
+    fromStore.close();
+  }
+}

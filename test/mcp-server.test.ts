@@ -61,11 +61,12 @@ describe('MCP server (in-memory transport)', () => {
     temp.cleanup();
   });
 
-  it('lists all six read-only tools with annotations', async () => {
+  it('lists all seven read-only tools with annotations', async () => {
     const result = await client.listTools();
     const names = result.tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       'browse_title38',
+      'compare_snapshots',
       'get_section',
       'health',
       'index_status',
@@ -669,6 +670,149 @@ describe('MCP server (in-memory transport)', () => {
   });
 });
 
+describe('MCP compare_snapshots tool', () => {
+  const FROM_DATE = '2026-01-01';
+  const TO_DATE = '2026-02-01';
+
+  const FROM_SECTIONS = [
+    makeSection({
+      citation: '4.1',
+      heading: 'Evaluation criteria.',
+      text: 'Shared line.\nOld criteria.',
+    }),
+    makeSection({ citation: '4.2', heading: 'Removed section.', text: 'Removed body.' }),
+  ];
+  const TO_SECTIONS = [
+    makeSection({
+      citation: '4.1',
+      heading: 'Evaluation criteria.',
+      text: 'Shared line.\nNew criteria.',
+    }),
+    makeSection({ citation: '4.4', heading: 'Added section.', text: 'Added body.' }),
+  ];
+
+  async function callCompareSnapshots(args: Record<string, unknown> = {}): Promise<ToolCallResult> {
+    const fromTemp = openTempStore({ sections: FROM_SECTIONS, issueDate: FROM_DATE });
+    const toTemp = openTempStore({ sections: TO_SECTIONS, issueDate: TO_DATE });
+    const serverTemp = openTempStore();
+    const fromPath = path.join(fromTemp.dir, 'from.sqlite');
+    const toPath = path.join(toTemp.dir, 'to.sqlite');
+    fromTemp.store.backupTo(fromPath);
+    toTemp.store.backupTo(toPath);
+
+    const server = buildMcpServer(new CFRService(serverTemp.store, 7), createTestLogger());
+    const client = new Client({ name: 'snapshot-probe', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      return (await client.callTool({
+        name: 'compare_snapshots',
+        arguments: { from_snapshot: fromPath, to_snapshot: toPath, ...args },
+      })) as ToolCallResult;
+    } finally {
+      await client.close();
+      await server.close();
+      fromTemp.cleanup();
+      toTemp.cleanup();
+      serverTemp.cleanup();
+    }
+  }
+
+  it('returns an offline comparison as structured content and model-readable text', async () => {
+    const result = await callCompareSnapshots();
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent?.['from']).toMatchObject({ issueDate: FROM_DATE });
+    expect(result.structuredContent?.['to']).toMatchObject({ issueDate: TO_DATE });
+    expect(
+      (result.structuredContent?.['changed'] as Array<{ citation: string }>).map(
+        (change) => change.citation,
+      ),
+    ).toEqual(['4.1']);
+    expect(
+      (result.structuredContent?.['added'] as Array<{ citation: string }>).map(
+        (change) => change.citation,
+      ),
+    ).toEqual(['4.4']);
+    expect(
+      (result.structuredContent?.['removed'] as Array<{ citation: string }>).map(
+        (change) => change.citation,
+      ),
+    ).toEqual(['4.2']);
+
+    const changed = (result.structuredContent?.['changed'] as Array<Record<string, unknown>>)[0];
+    expect(changed).toMatchObject({
+      fromIssueDate: FROM_DATE,
+      toIssueDate: TO_DATE,
+      fromSourceUrl: `https://www.ecfr.gov/on/${FROM_DATE}/title-38/section-4.1`,
+      toSourceUrl: `https://www.ecfr.gov/on/${TO_DATE}/title-38/section-4.1`,
+    });
+    expect((changed?.['summary'] as { hunks: unknown[] }).hunks).toEqual([
+      { fromLine: 2, toLine: null, type: 'del', text: 'Old criteria.' },
+      { fromLine: null, toLine: 2, type: 'add', text: 'New criteria.' },
+    ]);
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('issueDate: 2026-01-01');
+    expect(text).toContain('citation: 4.1');
+    expect(text).toContain(
+      'fromSourceUrl: https://www.ecfr.gov/on/2026-01-01/title-38/section-4.1',
+    );
+    expect(text.trimStart().startsWith('{')).toBe(false);
+  });
+
+  it('stays registered without an eCFR client and is closed-world', async () => {
+    const temp = openTempStore();
+    const server = buildMcpServer(new CFRService(temp.store, 7), createTestLogger());
+    const client = new Client({ name: 'snapshot-list-probe', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const listed = await client.listTools();
+      const tool = listed.tools.find((entry) => entry.name === 'compare_snapshots');
+      expect(tool).toBeDefined();
+      expect(tool?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+      expect(tool?.description).toContain('never contacts eCFR');
+    } finally {
+      await client.close();
+      await server.close();
+      temp.cleanup();
+    }
+  });
+
+  it('validates the optional part argument before touching the snapshots', async () => {
+    const result = await callCompareSnapshots({ part: '4A' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/invalid arguments/i);
+  });
+
+  it('reports a missing snapshot as a client-safe tool error', async () => {
+    const temp = openTempStore();
+    const server = buildMcpServer(new CFRService(temp.store, 7), createTestLogger());
+    const client = new Client({ name: 'snapshot-error-probe', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = (await client.callTool({
+        name: 'compare_snapshots',
+        arguments: { from_snapshot: 'missing.sqlite', to_snapshot: 'also-missing.sqlite' },
+      })) as ToolCallResult;
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('Error: no snapshot at ');
+      expect(result.content[0]?.text).toContain('cfr-free export');
+      expect(result.structuredContent).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+      temp.cleanup();
+    }
+  });
+});
+
 describe('MCP diff_issues tool (ecfr injected)', () => {
   const FROM_DATE = '2026-01-01';
   const TO_DATE = '2026-06-01';
@@ -737,6 +881,7 @@ describe('MCP diff_issues tool (ecfr injected)', () => {
       const names = listed.tools.map((tool) => tool.name).sort();
       expect(names).toEqual([
         'browse_title38',
+        'compare_snapshots',
         'diff_issues',
         'get_section',
         'get_section_at',
@@ -760,13 +905,13 @@ describe('MCP diff_issues tool (ecfr injected)', () => {
     try {
       const names = (await withoutClient.client.listTools()).tools.map((tool) => tool.name);
       expect(names).not.toContain('diff_issues');
-      expect(names).toHaveLength(6);
+      expect(names).toHaveLength(7);
     } finally {
       await withoutClient.close();
     }
   });
 
-  it('annotates the three eCFR tools openWorld and the six index tools closed-world', async () => {
+  it('annotates the three eCFR tools openWorld and the seven index tools closed-world', async () => {
     const probe = await connectedServer(
       stubEcfr({ [FROM_DATE]: DIFF_FROM_XML, [TO_DATE]: DIFF_TO_XML }),
     );
@@ -1067,6 +1212,7 @@ describe('MCP redline tool (ecfr injected)', () => {
       const names = listed.tools.map((tool) => tool.name).sort();
       expect(names).toEqual([
         'browse_title38',
+        'compare_snapshots',
         'diff_issues',
         'get_section',
         'get_section_at',
@@ -1091,7 +1237,7 @@ describe('MCP redline tool (ecfr injected)', () => {
       const names = (await withoutClient.client.listTools()).tools.map((tool) => tool.name);
       expect(names).not.toContain('redline');
       expect(names).not.toContain('diff_issues');
-      expect(names).toHaveLength(6);
+      expect(names).toHaveLength(7);
     } finally {
       await withoutClient.close();
     }
@@ -1274,27 +1420,43 @@ describe('MCP surface contracts', () => {
     const secret = 'INTERNAL-DETAIL-DO-NOT-LEAK';
     const probe = await connect(failingService(secret), stubEcfr(secret));
     try {
-      const calls: Array<[string, Record<string, unknown>]> = [
-        ['search_regulations', { query: 'mental disorder' }],
-        ['get_section', { citation: '4.125' }],
-        ['browse_title38', {}],
-        ['index_status', {}],
-        ['list_parts', {}],
-        ['health', {}],
-        ['get_section_at', { at_date: '2024-03-10', citation: '4.125' }],
-        ['diff_issues', { from_date: '2026-01-01', to_date: '2026-06-01' }],
-        ['redline', { from_date: '2026-01-01', to_date: '2026-06-01', citation: '4.125' }],
+      const calls: Array<[string, Record<string, unknown>, string]> = [
+        ['search_regulations', { query: 'mental disorder' }, 'internal server error'],
+        ['get_section', { citation: '4.125' }, 'internal server error'],
+        ['browse_title38', {}, 'internal server error'],
+        ['index_status', {}, 'internal server error'],
+        ['list_parts', {}, 'internal server error'],
+        ['health', {}, 'internal server error'],
+        // compare_snapshots reads the caller-named files rather than the
+        // injected service; a missing snapshot is already the client-safe
+        // error class, while the other tools exercise the generic mask.
+        [
+          'compare_snapshots',
+          { from_snapshot: 'from.sqlite', to_snapshot: 'to.sqlite' },
+          'no snapshot at',
+        ],
+        ['get_section_at', { at_date: '2024-03-10', citation: '4.125' }, 'internal server error'],
+        [
+          'diff_issues',
+          { from_date: '2026-01-01', to_date: '2026-06-01' },
+          'internal server error',
+        ],
+        [
+          'redline',
+          { from_date: '2026-01-01', to_date: '2026-06-01', citation: '4.125' },
+          'internal server error',
+        ],
       ];
       // The list must cover every registered tool, or the contract is only
       // proven for the ones it names.
       const listed = (await probe.client.listTools()).tools.map((tool) => tool.name).sort();
       expect(calls.map(([name]) => name).sort()).toEqual(listed);
-      expect(listed).toHaveLength(9);
-      for (const [name, args] of calls) {
+      expect(listed).toHaveLength(10);
+      for (const [name, args, expected] of calls) {
         const result = (await probe.client.callTool({ name, arguments: args })) as ToolCallResult;
         expect(result.isError, name).toBe(true);
         expect(result.content[0]?.text, name).toContain('Error: ');
-        expect(result.content[0]?.text, name).toContain('internal server error');
+        expect(result.content[0]?.text, name).toContain(expected);
         expect(result.content[0]?.text, name).not.toContain(secret);
       }
     } finally {

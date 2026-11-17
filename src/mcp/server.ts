@@ -8,9 +8,9 @@ import { registerTools } from './tools.js';
 
 /**
  * Build the MCP server. Pure factory: no I/O, no transport, no process state —
- * tests wire it to an in-memory transport. `deps.ecfr` gates the `diff_issues`
- * and `redline` tools: absent (the default) the server shape is the six
- * local-index tools.
+ * tests wire it to an in-memory transport. `deps.ecfr` gates the three
+ * eCFR-backed tools (get_section_at, diff_issues, redline): absent (the
+ * default) the server shape is the seven local-index tools.
  */
 export function buildMcpServer(
   service: CFRService,
