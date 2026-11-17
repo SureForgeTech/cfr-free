@@ -1,4 +1,8 @@
-# cfr-free
+# sureforge-cfr
+
+> **Names.** This repository is `sureforge-cfr`. The npm package and the
+> command it installs are still called `cfr-free` (`npm install -g cfr-free`,
+> `npx -y cfr-free …`), so the commands below keep that name.
 
 [![CI](https://github.com/SureForgeTech/sureforge-cfr/actions/workflows/ci.yml/badge.svg)](https://github.com/SureForgeTech/sureforge-cfr/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/SureForgeTech/sureforge-cfr/blob/main/LICENSE)
@@ -68,16 +72,22 @@ provision and cite it.
 
 ### 1. Docker (nothing to install)
 
+> **No published image yet.** No container image is published under
+> `ghcr.io/sureforgetech` so far. Build one from a checkout first with
+> `docker build -t cfr-free:local .`; the commands below use that local tag.
+> The old `ghcr.io/deffenda/cfr-free` image predates the move to SureForgeTech
+> and is not maintained here.
+
 ```bash
 docker run -d --name cfr-free -p 127.0.0.1:8787:8787 -v cfr-data:/data \
-  ghcr.io/deffenda/cfr-free:latest
+  cfr-free:local
 ```
 
-The image is public and pulls anonymously. It syncs the index on first
+The image is built locally (see above). It syncs the index on first
 start (~5 s, ~2–3 MB from eCFR) and serves the API on
 <http://127.0.0.1:8787>; the index persists in the `cfr-data` volume. Any
 CLI command works the same way, e.g. `docker run --rm -v cfr-data:/data
-ghcr.io/deffenda/cfr-free:latest sync` to refresh, or `… export
+cfr-free:local sync` to refresh, or `… export
 /data/backup.sqlite` to snapshot into the volume. Details under
 [Docker](#docker) below.
 
@@ -210,7 +220,7 @@ CFR_INDEX_PATH=/tmp/cfr-smoke.sqlite node dist/cli.js sync   # ~5 s, then delete
 
 ```bash
 docker run -d --name cfr-free -p 127.0.0.1:8787:8787 -v cfr-data:/data \
-  ghcr.io/deffenda/cfr-free:latest
+  cfr-free:local
 ```
 
 **The API has no authentication.** The command above publishes it on loopback
@@ -221,7 +231,7 @@ front of it.
 The container syncs on first start (~5 s, ~2–3 MB from eCFR), then serves
 the HTTP API; the index persists in the `cfr-data` volume mounted at `/data`.
 Any CLI command works the same way, e.g.
-`docker run --rm -v cfr-data:/data ghcr.io/deffenda/cfr-free:latest sync` to
+`docker run --rm -v cfr-data:/data cfr-free:local sync` to
 refresh, or `… export /data/backup.sqlite` to snapshot into the volume.
 
 The image runs as a non-root user and binds `0.0.0.0` inside the container with the remote opt-in already set. That part is a container-networking requirement, not an exposure decision: a process bound to the container's own `127.0.0.1` cannot be reached through a published port, so the **published port is the exposure gate** — and the documented default publishes on loopback. Outside Docker the CLI still defaults to `127.0.0.1` with `CFR_ALLOW_REMOTE=1` required. When you do expose it, a per-peer token-bucket rate limit (60-burst, 10 tokens/s) turns on automatically. The budget is spent by cost, not by request: a read of the local index costs one token, and a route that pulls the whole upstream document from eCFR costs ten.
