@@ -1,7 +1,7 @@
 {
   "name": "cfr-free",
   "mcpName": "io.github.SureForgeTech/sureforge-cfr",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Self-hosted Title 38 CFR data service: SQLite FTS5 index built from the eCFR API, with an MCP server and HTTP API",
   "keywords": [
     "cfr",
