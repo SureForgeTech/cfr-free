@@ -223,8 +223,11 @@ describe('the CI scanning jobs', () => {
       'ghcr.io/gitleaks/gitleaks@sha256:',
     );
     // A gitleaks step that drops `--exit-code 1` reports green over a
-    // finding; one that drops `--redact` prints the secret in the log.
-    const gitleaks = steps.find((step) => step.includes('ghcr.io/gitleaks/gitleaks@sha256:')) ?? '';
+    // finding; one that drops `--redact` prints the secret in the log. A
+    // ` #` inside the command starts a shell comment that silently drops
+    // every argument after it, so the flags are read before any ` #`.
+    const step = steps.find((text) => text.includes('ghcr.io/gitleaks/gitleaks@sha256:')) ?? '';
+    const gitleaks = step.split(' #')[0] ?? '';
     for (const flag of ['detect --source', '--redact', '--exit-code 1']) {
       expect(gitleaks, `the CI gitleaks step lost \`${flag}\``).toContain(flag);
     }

@@ -158,7 +158,7 @@ npm install github:SureForgeTech/sureforge-cfr
 ```bash
 # requires Node >= 22.5
 git clone https://github.com/SureForgeTech/sureforge-cfr.git
-cd cfr-free
+cd sureforge-cfr
 npm ci                  # install the pinned dependencies
 npm run build           # compile to dist/ (the CLI entry point is dist/cli.js)
 
