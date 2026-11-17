@@ -1122,6 +1122,7 @@ describe('the packed artifact', () => {
       );
       writeFileSync(path.join(staging, 'README.md'), '# stub\n');
       writeFileSync(path.join(staging, 'LICENSE'), 'MIT\n');
+      writeFileSync(path.join(staging, 'NOTICE'), 'notice\n');
       mkdirSync(path.join(staging, 'dist'), { recursive: true });
       writeFileSync(path.join(staging, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
       // `dist/config.js` stands in for a real import of the entry point
@@ -1147,6 +1148,7 @@ describe('the packed artifact', () => {
       expect(paths).toContain('package.json');
       expect(paths).toContain('README.md');
       expect(paths).toContain('LICENSE');
+      expect(paths).toContain('NOTICE');
     } finally {
       rmSync(staging, { recursive: true, force: true });
     }

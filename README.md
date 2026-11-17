@@ -1,6 +1,6 @@
 # cfr-free
 
-[![CI](https://github.com/deffenda/cfr-free/actions/workflows/ci.yml/badge.svg)](https://github.com/deffenda/cfr-free/actions/workflows/ci.yml)
+[![CI](https://github.com/SureForgeTech/cfr-free/actions/workflows/ci.yml/badge.svg)](https://github.com/SureForgeTech/cfr-free/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/SureForgeTech/cfr-free/blob/main/LICENSE)
 
 Self-hosted **Title 38 CFR data service**: it builds a local, full-text
@@ -102,8 +102,8 @@ neither a compiler nor a checkout — it is the fastest way in.
 ### 3. From a release tarball (no compiler)
 
 ```bash
-npx -y https://github.com/deffenda/cfr-free/releases/download/v0.2.1/cfr-free-0.2.1.tgz version  # -> 0.2.1
-npx -y https://github.com/deffenda/cfr-free/releases/download/v0.2.1/cfr-free-0.2.1.tgz serve    # HTTP API on http://127.0.0.1:8787
+npx -y https://github.com/SureForgeTech/cfr-free/releases/download/v0.2.1/cfr-free-0.2.1.tgz version  # -> 0.2.1
+npx -y https://github.com/SureForgeTech/cfr-free/releases/download/v0.2.1/cfr-free-0.2.1.tgz serve    # HTTP API on http://127.0.0.1:8787
 ```
 
 Every GitHub release carries the package tarball at
@@ -121,8 +121,8 @@ filename together to pick another release.
 ### 4. From GitHub (no publish step)
 
 ```bash
-npx -y github:deffenda/cfr-free version    # -> 0.2.2
-npx -y github:deffenda/cfr-free serve      # HTTP API on http://127.0.0.1:8787
+npx -y github:SureForgeTech/cfr-free version    # -> 0.2.2
+npx -y github:SureForgeTech/cfr-free serve      # HTTP API on http://127.0.0.1:8787
 ```
 
 `npx` fetches and compiles the project on first use, so the first run takes
@@ -133,7 +133,7 @@ above needs neither.
 To use it as a dependency of your own project:
 
 ```bash
-npm install github:deffenda/cfr-free
+npm install github:SureForgeTech/cfr-free
 ```
 
 > **A global install from a git URL (`npm install -g github:…`) does not
@@ -157,7 +157,7 @@ npm install github:deffenda/cfr-free
 
 ```bash
 # requires Node >= 22.5
-git clone https://github.com/deffenda/cfr-free.git
+git clone https://github.com/SureForgeTech/cfr-free.git
 cd cfr-free
 npm ci                  # install the pinned dependencies
 npm run build           # compile to dist/ (the CLI entry point is dist/cli.js)
@@ -338,7 +338,7 @@ every project instead.
 All of these forms run `npx -y cfr-free mcp` under the hood: nothing
 installed, no path to edit, and the published tarball ships compiled —
 no compiler runs on first use. The JSON config also works from the git URL
-(`"args": ["-y", "github:deffenda/cfr-free", "mcp"]`), which `npx` fetches
+(`"args": ["-y", "github:SureForgeTech/cfr-free", "mcp"]`), which `npx` fetches
 and compiles on first use (verified end to end: the `list_parts` tool
 answers over stdio). If you built it from a checkout, use the absolute
 path to the built CLI, because MCP clients do not inherit your shell's
@@ -431,7 +431,7 @@ curl 'http://127.0.0.1:8787/metrics'
 ```
 
 The full request/response contract (schemas, error envelopes) is documented in
-[`docs/openapi.yaml`](https://github.com/deffenda/cfr-free/blob/main/docs/openapi.yaml) (OpenAPI 3.1).
+[`docs/openapi.yaml`](https://github.com/SureForgeTech/cfr-free/blob/main/docs/openapi.yaml) (OpenAPI 3.1).
 
 The API is intentionally minimal: **GET-only, no request bodies, no
 templating**, bound to `127.0.0.1` by default. The deliberate non-JSON
@@ -533,7 +533,7 @@ not legal advice; verify citations against the official eCFR.
 
 ## Security
 
-See [SECURITY.md](https://github.com/deffenda/cfr-free/blob/main/SECURITY.md) for reporting vulnerabilities and the security
+See [SECURITY.md](https://github.com/SureForgeTech/cfr-free/blob/main/SECURITY.md) for reporting vulnerabilities and the security
 posture summary. Reported by default: lint/strict-TS/typecheck/coverage/Audit
 gates (plus local trivy/semgrep/osv-scanner/gitleaks scans), zero runtime
 dependencies beyond the MCP SDK, XML parser hardening (no
@@ -543,8 +543,8 @@ surface), and loopback-only networking by default.
 ## Feedback
 
 Wrong citation, ranking surprise, installation obstacle, feature request:
-[open an issue](https://github.com/deffenda/cfr-free/issues) (usage questions
-fit [Discussions](https://github.com/deffenda/cfr-free/discussions)). User
+[open an issue](https://github.com/SureForgeTech/cfr-free/issues) (usage questions
+fit [Discussions](https://github.com/SureForgeTech/cfr-free/discussions)). User
 feedback is the project's demand signal — the roadmap's stage E reads it
 before any expansion decision.
 
