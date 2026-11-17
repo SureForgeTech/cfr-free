@@ -119,8 +119,11 @@ function lineAt(lines: readonly string[], index: number): string {
  *
  * The caller caps inputs at {@link MAX_REDLINE_LINES} per side first, so the
  * table below is bounded (see the allocation comment).
+ *
+ * Exported for the offline snapshot comparison (`src/core/snapshot-compare.ts`),
+ * which reuses the same line identity to build a short changed-lines summary.
  */
-function lcsHunks(fromLines: readonly string[], toLines: readonly string[]): Hunk[] {
+export function lcsHunks(fromLines: readonly string[], toLines: readonly string[]): Hunk[] {
   const rows = fromLines.length;
   const cols = toLines.length;
   const stride = cols + 1;
@@ -186,8 +189,12 @@ function coarseHunks(fromText: string, toText: string): Hunk[] {
   ];
 }
 
-/** added/removed: the present side's lines, each with its own 1-based anchor. */
-function presenceHunks(lines: readonly string[], presentSide: 'from' | 'to'): Hunk[] {
+/**
+ * added/removed: the present side's lines, each with its own 1-based anchor.
+ * Exported for the offline snapshot comparison, which builds the same
+ * presence excerpt for a provision that exists on only one side.
+ */
+export function presenceHunks(lines: readonly string[], presentSide: 'from' | 'to'): Hunk[] {
   return lines.map((text, index): Hunk =>
     presentSide === 'from'
       ? { fromLine: index + 1, toLine: null, type: 'del', text }
