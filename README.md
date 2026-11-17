@@ -28,11 +28,12 @@ keys, no telemetry — one Node process and one SQLite file.
 - **Read-only web UI** (search, browse, section reads, line-level redlines,
   copy-a-citation) over the same JSON API — rating tables keep their
   structure, and the whole UI is reachable from the keyboard.
-- **MCP server** with nine read-only tools any MCP client can use: six
+- **MCP server** with ten read-only tools any MCP client can use: seven
   offline index-backed ones (`search_regulations`, `get_section`,
-  `browse_title38`, `index_status`, `list_parts`, `health`) plus three that
-  fetch the live eCFR versioner on demand (`get_section_at` (one provision
-  as it stood at a date), `diff_issues`, `redline`).
+  `browse_title38`, `index_status`, `list_parts`, `health`,
+  `compare_snapshots`) plus three that fetch the live eCFR versioner on
+  demand (`get_section_at` (one provision as it stood at a date),
+  `diff_issues`, `redline`).
 - **HTTP JSON API** for scripts and apps: search, read sections, browse the
   CFR hierarchy, health check, Prometheus metrics.
 - **Measured retrieval**: a frozen query set and runner score the search
@@ -42,12 +43,14 @@ keys, no telemetry — one Node process and one SQLite file.
   from and warns when it goes stale or drifts from the structure tree.
 - **Backup-friendly**: `cfr-free export <path> [jsonl|md]` writes a consistent
   snapshot of the index you can copy anywhere (sqlite default; `jsonl` and `md`
-  for pipeline ingestion).
+  for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
+  SQLite snapshots offline — added, removed and changed provisions with dated
+  source links and bounded text-change hunks.
 
 ## Requirements
 
-- Node.js **≥ 22.5** (uses the built-in `node:sqlite`; SQLite ≥ 3.50 with
-  FTS5, bundled with Node 22.5+)
+- Node.js **≥ 22.13** (uses the built-in `node:sqlite`; SQLite ≥ 3.50 with
+  FTS5, bundled with Node 22.13+)
 - Network access only for `cfr-free sync`, `cfr-free diff`,
   `cfr-free redline` and `cfr-free historical` (~2–3 MB from ecfr.gov
   per full-title fetch; the two-date views fetch twice); the startup
@@ -131,7 +134,7 @@ filename together to pick another release.
 ### 4. From GitHub (no publish step)
 
 ```bash
-npx -y github:SureForgeTech/sureforge-cfr version    # -> 0.2.2
+npx -y github:SureForgeTech/sureforge-cfr version    # -> 0.2.3
 npx -y github:SureForgeTech/sureforge-cfr serve      # HTTP API on http://127.0.0.1:8787
 ```
 
@@ -166,13 +169,13 @@ npm install github:SureForgeTech/sureforge-cfr
 ### 5. From a source checkout
 
 ```bash
-# requires Node >= 22.5
+# requires Node >= 22.13
 git clone https://github.com/SureForgeTech/sureforge-cfr.git
 cd sureforge-cfr
 npm ci                  # install the pinned dependencies
 npm run build           # compile to dist/ (the CLI entry point is dist/cli.js)
 
-node dist/cli.js version        # -> 0.2.2   (verifies the build)
+node dist/cli.js version        # -> 0.2.3   (verifies the build)
 node dist/cli.js sync           # build the local index (~2-3 MB download, ~5 s)
 node dist/cli.js serve          # HTTP API on http://127.0.0.1:8787
 # or
@@ -278,7 +281,7 @@ fetch.
 export CFR_INDEX_PATH=/tmp/smoke.sqlite   # never your real index
 
 # 1. the build is what you think it is
-node dist/cli.js version                  # -> 0.2.2
+node dist/cli.js version                  # -> 0.2.3
 
 # 2. network: build the index (~2-3 MB, ~5 s)
 node dist/cli.js sync
@@ -378,18 +381,20 @@ disorders?"_ or _"Search Title 38 for traumatic brain injury compensation."_
 | `index_status`       | —                                                           | Issue date, last sync, row counts, staleness, drift flag, corpus receipt hash, and what the last sync amended/added/removed                                                                                                                                                                                                                      |
 | `list_parts`         | —                                                           | Parts in the index with titles and section/appendix counts                                                                                                                                                                                                                                                                                       |
 | `health`             | —                                                           | One-call readiness verdict: `ready`, `stale`, `degraded` (structure drift), or `empty`                                                                                                                                                                                                                                                           |
+| `compare_snapshots`  | `from_snapshot`, `to_snapshot`, `part?`                     | Offline comparison of two stored index snapshots: added/removed/changed provisions with both recorded issue dates, hierarchy, dated ecfr.gov permalinks, image-content flags and bounded text-change hunks                                                                                                                                       |
 | `get_section_at`     | `at_date` (YYYY-MM-DD), `citation`                          | One provision as it stood at a date: the eCFR revision in force then, fetched from eCFR on demand (no local index; a short-lived in-memory memo may reuse a document fetched moments ago; the point-in-time archive starts 2017-01-01)                                                                                                           |
 | `diff_issues`        | `from_date`, `to_date`                                      | Provision-level diff between two eCFR issue dates: changed/added/removed citations (capped, with a truncation flag)                                                                                                                                                                                                                              |
 | `redline`            | `from_date`, `to_date`, `citation`                          | Line-level redline of one provision between two eCFR issue dates: status, both sides' text, and per-line hunks                                                                                                                                                                                                                                   |
 
-All tools are **read-only**; the six index tools query only the local index and
-never hit the network, while `get_section_at`, `diff_issues` and `redline`
-fetch from eCFR on demand (a point-in-time revision, or two issue dates'
-full-title XML); a fetched document is reused for up to five minutes by the
-process that fetched it (at most four documents are kept), and concurrent
-readers of the same date share one upstream fetch. Search and section responses carry a freshness envelope
-(`indexStale` + a `notice` when the local index has aged out) so a client can
-never unknowingly quote a lapsed version.
+All tools are **read-only**; the seven index tools query only the local index
+and never hit the network (`compare_snapshots` reads two stored SQLite
+snapshots and never contacts eCFR), while `get_section_at`, `diff_issues` and
+`redline` fetch from eCFR on demand (a point-in-time revision, or two issue
+dates' full-title XML); a fetched document is reused for up to five minutes by
+the process that fetched it (at most four documents are kept), and concurrent
+readers of the same date share one upstream fetch. Search and section
+responses carry a freshness envelope (`indexStale` + a `notice` when the local
+index has aged out) so a client can never unknowingly quote a lapsed version.
 
 Beyond tools, the server exposes three MCP **resources** that clients can read
 directly — `cfr://index/status` (freshness JSON: issue date, last sync, row

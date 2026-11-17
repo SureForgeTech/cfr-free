@@ -8,13 +8,13 @@
     "source": "github"
   },
   "websiteUrl": "https://sureforgetech.com/open-source/",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "cfr-free",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "transport": {
         "type": "stdio"
       },

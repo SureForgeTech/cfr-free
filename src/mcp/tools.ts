@@ -7,6 +7,7 @@ import type { EcfrApi } from '../core/ecfr.js';
 import { redlineSection } from '../core/redline.js';
 import { ARCHIVE_FLOOR } from '../core/archive.js';
 import { historicalSection } from '../core/historical.js';
+import { compareSnapshots } from '../core/snapshot-compare.js';
 import {
   SEARCH_QUERY_MAX_LENGTH,
   SEARCH_QUERY_MIN_LENGTH,
@@ -17,12 +18,14 @@ import { renderToolText, runTool } from './tool-result.js';
 
 /**
  * MCP tool registrations. Every tool is read-only (never destructive,
- * idempotent). Six read the local index with zero network access during tool
- * calls; `get_section_at`, `diff_issues` and `redline` are the deliberate
- * network exceptions — read-only everywhere, but each fetches from eCFR on
- * demand (a point-in-time revision, or two issue dates' full-title XML; see
- * their registrations below), which is why the server registers them only
- * when an eCFR client is injected.
+ * idempotent). Seven read the local index with zero network access during
+ * tool calls — search, section, browse, status, parts, health, and the
+ * offline comparison of two stored snapshots (`compare_snapshots`);
+ * `get_section_at`, `diff_issues` and `redline` are the deliberate network
+ * exceptions — read-only everywhere, but each fetches from eCFR on demand (a
+ * point-in-time revision, or two issue dates' full-title XML; see their
+ * registrations below), which is why the server registers them only when an
+ * eCFR client is injected.
  */
 
 const READ_ONLY_ANNOTATIONS = {
@@ -42,7 +45,8 @@ const DIFF_ANNOTATIONS = {
  * The MCP wire's size bound on ONE provision's body, in characters.
  *
  * `diff_issues` bounds its citation lists at {@link CHANGE_LIST_CAP} and
- * reports a `truncated` flag; a provision is one text, so the bound is a
+ * `compare_snapshots` its change entries at the same cap, each reporting a
+ * `truncated` flag; a provision is one text, so the bound is a
  * character count. 100 000 characters ≈ 25k tokens: a large provision
  * (§ 4.130 is tens of KB) still fits a context, and a pathological one
  * cannot blow it. The parser's own guard (MAX_SECTION_CHARS = 400 000 in
@@ -270,6 +274,69 @@ type ListPartsOutput = z.infer<typeof listPartsOutputSchema>;
 type HealthOutput = z.infer<typeof healthOutputSchema>;
 type ChangeReportOutput = z.infer<typeof changeReportOutputSchema>;
 type RedlineOutput = z.infer<typeof redlineOutputSchema>;
+
+const changeSummarySchema = z.object({
+  hunks: z.array(
+    z.object({
+      fromLine: z.number().nullable(),
+      toLine: z.number().nullable(),
+      type: z.enum(['same', 'add', 'del']),
+      text: z.string(),
+    }),
+  ),
+  truncated: z
+    .boolean()
+    .describe('true when the sections differ in lines this summary does not show'),
+});
+
+/**
+ * One provision that differs between the two stored snapshots. Both issue
+ * dates and a dated source URL per side travel on EVERY change, so an entry
+ * stands alone as a citable claim about one revision transition.
+ */
+const snapshotChangeSchema = z.object({
+  citation: z.string(),
+  kind: z.enum(['section', 'appendix']),
+  heading: z.string(),
+  headingChanged: z
+    .boolean()
+    .describe('true when the provision was retitled — possibly with an unchanged body'),
+  previousHeading: z.string().nullable(),
+  chapter: z.string().nullable(),
+  part: z.string().nullable(),
+  subpart: z.string().nullable(),
+  path: z.string(),
+  fromIssueDate: z.string(),
+  toIssueDate: z.string(),
+  fromSourceUrl: z
+    .string()
+    .nullable()
+    .describe(
+      'the dated eCFR permalink at the from snapshot\u2019s issue date; null for an addition',
+    ),
+  toSourceUrl: z
+    .string()
+    .nullable()
+    .describe('the dated eCFR permalink at the to snapshot\u2019s issue date; null for a removal'),
+  imageContent: z
+    .boolean()
+    .describe(
+      'true when either side\u2019s text carries an image-content marker — the summary is not complete coverage',
+    ),
+  summary: changeSummarySchema,
+});
+
+const snapshotComparisonOutputSchema = z.object({
+  from: z.object({ path: z.string(), issueDate: z.string() }),
+  to: z.object({ path: z.string(), issueDate: z.string() }),
+  part: z.string().nullable(),
+  added: z.array(snapshotChangeSchema),
+  removed: z.array(snapshotChangeSchema),
+  changed: z.array(snapshotChangeSchema),
+  truncated: z
+    .boolean()
+    .describe(`true when any category list was cut at the ${CHANGE_LIST_CAP}-entry cap`),
+});
 
 /** Register all tools on the server; `deps.ecfr` gates the three eCFR-backed tools (get_section_at, diff_issues, redline). */
 export function registerTools(
@@ -527,6 +594,71 @@ export function registerTools(
     async () =>
       runTool(logger, 'health', async () => {
         const structuredContent: HealthOutput = service.health();
+        return {
+          content: [{ type: 'text', text: renderToolText(structuredContent) }],
+          structuredContent,
+        };
+      }),
+  );
+
+  server.registerTool(
+    'compare_snapshots',
+    {
+      title: 'Compare two stored snapshots of the index',
+      description:
+        'Offline comparison of two STORED snapshots of the Title 38 index (SQLite files, typically ' +
+        'copies kept with `cfr-free export <path>`): which provisions were added, removed or changed ' +
+        'between the revision the `from_snapshot` file holds and the revision the `to_snapshot` file ' +
+        'holds. The comparison reads the two files and never contacts eCFR or fetches anything — ' +
+        'obtaining a snapshot is a separate, explicit step (`cfr-free sync` to refresh the index, ' +
+        '`cfr-free export <path>` to store a copy). Each snapshot names the eCFR issue date it was ' +
+        'built from, so unlike the date-based `diff_issues` tool these dates are RECORDED revision ' +
+        'stamps, and every change carries both of them, its citation, its hierarchy path, a dated ' +
+        'ecfr.gov permalink for each side (the link a reader can open to verify that exact revision), ' +
+        'and a short line-level summary of the differing text (add/del hunks with 1-based anchors ' +
+        'into each side; each hunk and each entry summary is character-bounded, and `truncated: true` ' +
+        'when text or differing lines exist beyond the shown bound — including a very long provision, ' +
+        'which falls back to one excerpt block per side). A retitle with an ' +
+        'unchanged body is reported as a change (`headingChanged: true`, empty text summary); a ' +
+        '`imageContent: true` flag marks a provision whose rating-table graphics are not in the text. ' +
+        'Optional `part` restricts the comparison to one CFR part. Both snapshots must record an issue ' +
+        'date; identical paths, a missing file, or a file that is not a cfr-free snapshot are rejected ' +
+        'as errors before any comparison. ' +
+        UNTRUSTED_DATA_NOTE,
+      inputSchema: {
+        from_snapshot: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe('path to the earlier stored snapshot, e.g. "snapshots/2026-01-01.sqlite"'),
+        to_snapshot: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe('path to the later stored snapshot, e.g. "snapshots/2026-06-01.sqlite"'),
+        part: z
+          .string()
+          .regex(/^\d{1,3}$/)
+          .optional()
+          .describe('restrict the comparison to one CFR part number'),
+      },
+      outputSchema: snapshotComparisonOutputSchema,
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async (args) =>
+      runTool(logger, 'compare_snapshots', async () => {
+        const comparison = compareSnapshots({ logger }, args.from_snapshot, args.to_snapshot, {
+          part: args.part,
+        });
+        const structuredContent = {
+          from: comparison.from,
+          to: comparison.to,
+          part: comparison.part,
+          added: comparison.added,
+          removed: comparison.removed,
+          changed: comparison.changed,
+          truncated: comparison.truncated,
+        };
         return {
           content: [{ type: 'text', text: renderToolText(structuredContent) }],
           structuredContent,
