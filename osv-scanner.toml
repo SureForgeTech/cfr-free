@@ -1,0 +1,7 @@
+# picomatch 4.0.7 is the newest release and has no fixed version for this
+# advisory. It is a development-only dependency (test and lint tooling) and
+# is not shipped in the runtime image. Re-check when the date below passes.
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-17
+reason = "dev-only picomatch 4.0.7; no fixed version published yet"
