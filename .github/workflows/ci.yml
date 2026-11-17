@@ -92,9 +92,18 @@ jobs:
           # Full history so gitleaks can scan commits.
           fetch-depth: 0
       - name: gitleaks (secrets)
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The gitleaks CLI in its official image, pinned by digest, with the
+        # same invocation as the local sweep (tools/security-scan.sh).
+        # gitleaks/gitleaks-action needs a paid licence key for repositories
+        # owned by an organization and refused to run after this repository
+        # moved to SureForgeTech (2026-11-17); the CLI itself is MIT and
+        # needs no key. Running as the runner's user keeps git from
+        # rejecting the checkout as owned by someone else.
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)"
+          -v "$GITHUB_WORKSPACE:/repo" -w /repo
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          detect --source /repo --redact --no-banner --exit-code 1
       - name: osv-scanner (dependency advisories)
         uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
         with:
