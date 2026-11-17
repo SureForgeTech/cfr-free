@@ -14,7 +14,7 @@
     "type": "git",
     "url": "git+https://github.com/deffenda/cfr-free.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=22.5"
@@ -31,7 +31,8 @@
     "scripts/prepare.mjs",
     "scripts/copy-assets.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",

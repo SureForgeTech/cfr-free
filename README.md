@@ -1,7 +1,7 @@
 # cfr-free
 
 [![CI](https://github.com/deffenda/cfr-free/actions/workflows/ci.yml/badge.svg)](https://github.com/deffenda/cfr-free/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/deffenda/cfr-free/blob/main/LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/SureForgeTech/cfr-free/blob/main/LICENSE)
 
 Self-hosted **Title 38 CFR data service**: it builds a local, full-text
 searchable index of Title 38 of the Code of Federal Regulations (the VA
@@ -550,4 +550,4 @@ before any expansion decision.
 
 ## License
 
-[MIT](https://github.com/deffenda/cfr-free/blob/main/LICENSE)
+[Apache-2.0](https://github.com/SureForgeTech/cfr-free/blob/main/LICENSE). Releases up to and including v0.2.1 were published under the MIT License.

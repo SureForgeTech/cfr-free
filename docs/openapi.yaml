@@ -9,7 +9,7 @@ openapi: 3.1.0
 info:
   title: cfr-free Titan HTTP API
   version: 0.1.0 # keep in sync with package.json
-  license: { identifier: MIT }
+  license: { identifier: Apache-2.0 }
   description: |
     GET-only JSON surface over the local Title 38 index (plus `/api/v1/diff`
     and `/api/v1/redline`, the two routes that fetch from eCFR on demand

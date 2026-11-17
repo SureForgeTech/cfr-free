@@ -296,6 +296,7 @@ describe('the npm manifest', () => {
     expect(files).toContain('scripts/prepare.mjs');
     expect(files).toContain('README.md');
     expect(files).toContain('LICENSE');
+    expect(files).toContain('NOTICE');
   });
 
   it('points the executable at a file the build produces', () => {
