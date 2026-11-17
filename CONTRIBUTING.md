@@ -5,7 +5,7 @@ Thanks for contributing! This project stays small and strict on purpose.
 ## Development setup
 
 ```bash
-git clone https://github.com/SureForgeTech/cfr-free.git
+git clone https://github.com/SureForgeTech/sureforge-cfr.git
 cd cfr-free
 npm ci          # installs pinned deps (allowlist-managed install scripts)
 npm run ci      # the same gate CI runs

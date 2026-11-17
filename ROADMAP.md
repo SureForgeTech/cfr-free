@@ -29,7 +29,7 @@ acceptance criteria, and gates are recorded in
 
 ## Competitive direction — proposed 2026-10-20
 
-Tracking: [issue #62](https://github.com/SureForgeTech/cfr-free/issues/62).
+Tracking: [issue #62](https://github.com/SureForgeTech/sureforge-cfr/issues/62).
 This section is a planning backlog, not a claim that the features exist.
 `docs/SPEC.md` remains the sole design authority. Refine and verify every
 packet against current code before dispatch; update SPEC alongside behavior.

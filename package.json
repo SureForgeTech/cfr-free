@@ -9,10 +9,10 @@
     "veterans",
     "mcp"
   ],
-  "homepage": "https://github.com/SureForgeTech/cfr-free#readme",
+  "homepage": "https://github.com/SureForgeTech/sureforge-cfr#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SureForgeTech/cfr-free.git"
+    "url": "git+https://github.com/SureForgeTech/sureforge-cfr.git"
   },
   "license": "Apache-2.0",
   "type": "module",

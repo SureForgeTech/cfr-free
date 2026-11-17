@@ -465,7 +465,7 @@ This section's table is in [`docs/research/delivery-log.md`](research/delivery-l
 
 ## 11. GitHub delivery (best practices)
 
-- Public repo `SureForgeTech/cfr-free`, **Apache-2.0** license (releases up to and including v0.2.1 were MIT).
+- Public repo `SureForgeTech/sureforge-cfr`, **Apache-2.0** license (releases up to and including v0.2.1 were MIT).
 - Trunk-based flow: bootstrap `main` (docs/license only) → feature branch → **PR** → CI green → **squash merge** + branch delete.
 - Branch protection on `main`: PR required, strict up-to-date, required checks `quality (22)` + `quality (24)` + `security` + `actionlint` (the `security` and `actionlint` contexts are required per the live protection config; `docker` runs in CI as gate evidence but is not itself required). Review process: **an independent fresh-context review of the exact head is required for every PR** — see [`AGENTS.md`](../AGENTS.md) (the historical "no mandatory review (solo maintainer)" posture is superseded; solo-maintainer practice was documented in CONTRIBUTING).
 - Repo settings: squash merge only, auto-delete head branches, Dependabot (npm, actions and docker weekly), all workflow Actions **SHA-pinned** (Dependabot re-pins on updates), minimal `GITHUB_TOKEN` permissions (`contents: read`).

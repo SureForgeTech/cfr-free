@@ -222,6 +222,12 @@ describe('the CI scanning jobs', () => {
     expect(steps.join('\n'), 'the security job no longer runs gitleaks').toContain(
       'ghcr.io/gitleaks/gitleaks@sha256:',
     );
+    // A gitleaks step that drops `--exit-code 1` reports green over a
+    // finding; one that drops `--redact` prints the secret in the log.
+    const gitleaks = steps.find((step) => step.includes('ghcr.io/gitleaks/gitleaks@sha256:')) ?? '';
+    for (const flag of ['detect --source', '--redact', '--exit-code 1']) {
+      expect(gitleaks, `the CI gitleaks step lost \`${flag}\``).toContain(flag);
+    }
     expect(steps.join('\n'), 'the security job no longer runs osv-scanner').toContain(
       'google/osv-scanner-action',
     );

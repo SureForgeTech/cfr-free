@@ -36,7 +36,7 @@ Three things the README records, kept here so they are not lost along the way:
 
 - **Node ≥ 22.5 is required** by every route but Docker — the index runs on
   the built-in `node:sqlite` module.
-- **`npm install -g github:SureForgeTech/cfr-free` does not work.** npm itself
+- **`npm install -g github:SureForgeTech/sureforge-cfr` does not work.** npm itself
   leaves a command on PATH that does not run (measured; the README has the
   details). Use `npx`, a project-local install, the npm route or Docker.
 - **The routes are not all the same version of the tool**: npm gives the

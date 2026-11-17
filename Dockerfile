@@ -23,7 +23,7 @@ FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf
 LABEL org.opencontainers.image.title="cfr-free" \
       org.opencontainers.image.description="Self-hosted Title 38 CFR data service (MCP server + HTTP API over SQLite FTS5)" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/SureForgeTech/cfr-free"
+      org.opencontainers.image.source="https://github.com/SureForgeTech/sureforge-cfr"
 
 RUN addgroup -S cfr && adduser -S -G cfr cfr
 WORKDIR /app

@@ -7,7 +7,7 @@ Only the latest release on `main` receives security fixes.
 ## Reporting a vulnerability
 
 Please report suspected vulnerabilities via
-[GitHub private vulnerability reporting](https://github.com/SureForgeTech/cfr-free/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/SureForgeTech/sureforge-cfr/security/advisories/new)
 (preferred — keeps the report private until a fix ships). If that form is
 unavailable, contact the maintainer through GitHub directly. Do not open a
 public issue for security-sensitive reports. You can expect an acknowledgment
