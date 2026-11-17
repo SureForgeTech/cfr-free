@@ -196,19 +196,19 @@ jobs:
             echo "Install the packed tarball — no registry, no compiler, no build step:"
             echo
             echo '```bash'
-            echo "npm install -g https://github.com/deffenda/cfr-free/releases/download/${GITHUB_REF_NAME}/cfr-free-${PKG}.tgz"
+            echo "npm install -g https://github.com/SureForgeTech/sureforge-cfr/releases/download/${GITHUB_REF_NAME}/cfr-free-${PKG}.tgz"
             echo '```'
             echo
             echo "Or run it without installing:"
             echo
             echo '```bash'
-            echo "npx -y github:deffenda/cfr-free serve"
+            echo "npx -y github:SureForgeTech/sureforge-cfr serve"
             echo '```'
             echo
             echo "Or use the container image, which needs neither:"
             echo
             echo '```bash'
-            echo "docker run -d --name cfr-free -p 8787:8787 -v cfr-data:/data ghcr.io/deffenda/cfr-free:${GITHUB_REF_NAME#v}"
+            echo "docker run -d --name cfr-free -p 8787:8787 -v cfr-data:/data ghcr.io/sureforgetech/sureforge-cfr:${GITHUB_REF_NAME#v}"
             echo '```'
             echo
             echo "### Changes"
@@ -234,7 +234,7 @@ jobs:
   # - `--provenance` on both the dry-run and the real publish
   # Activation gate (operator-only): set repo variable NPM_TRUSTED_PUBLISHING=true
   # AND register the trusted publisher on npmjs.com for this package: GitHub Actions
-  # -> deffenda/cfr-free -> release.yml (one-time; first publish must land within 2 days).
+  # -> SureForgeTech/sureforge-cfr -> release.yml (one-time; first publish must land within 2 days).
   publish-npm:
     name: publish to npm (OIDC provenance)
     needs: [ci]
