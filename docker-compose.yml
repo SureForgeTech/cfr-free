@@ -13,7 +13,7 @@
 services:
   cfr-free:
     build: .
-    image: ghcr.io/deffenda/cfr-free:latest
+    image: cfr-free:local
     container_name: cfr-free
     ports:
       - '127.0.0.1:8787:8787'
