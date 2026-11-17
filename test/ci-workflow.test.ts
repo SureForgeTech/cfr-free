@@ -99,7 +99,6 @@ const ALLOWED_ACTIONS = new Set([
   'docker/metadata-action',
   'docker/setup-buildx-action',
   'docker/setup-qemu-action',
-  'gitleaks/gitleaks-action',
   'google/osv-scanner-action',
 ]);
 

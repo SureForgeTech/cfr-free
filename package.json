@@ -9,12 +9,12 @@
     "veterans",
     "mcp"
   ],
-  "homepage": "https://github.com/deffenda/cfr-free#readme",
+  "homepage": "https://github.com/SureForgeTech/sureforge-cfr#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deffenda/cfr-free.git"
+    "url": "git+https://github.com/SureForgeTech/sureforge-cfr.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=22.5"
@@ -31,7 +31,8 @@
     "scripts/prepare.mjs",
     "scripts/copy-assets.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",

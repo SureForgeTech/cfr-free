@@ -147,7 +147,7 @@ function scannerJobs(): Record<string, string> {
     ci.jobs.find((job) => job.steps.some(matches))?.key ?? '(no job runs it)';
   return {
     'npm audit': jobRunning((step) => (step.run ?? '').includes('scan:audit')),
-    gitleaks: jobRunning((step) => (step.uses ?? '').includes('gitleaks/gitleaks-action')),
+    gitleaks: jobRunning((step) => (step.run ?? '').includes('ghcr.io/gitleaks/gitleaks@sha256:')),
     'osv-scanner': jobRunning((step) => (step.uses ?? '').includes('osv-scanner-action')),
     'trivy (fs)': jobRunning(
       (step) => step.uses?.includes('trivy-action') === true && step.with['scan-type'] === 'fs',
@@ -218,10 +218,19 @@ describe('the CI scanning jobs', () => {
     // dependency advisories go unscanned.
     const security = jobOf(ci, 'security');
     expect(security, 'ci.yml has no `security` job').toBeDefined();
-    const steps = (security?.steps ?? []).map((step) => step.uses ?? '');
+    const steps = (security?.steps ?? []).map((step) => step.uses ?? step.run ?? '');
     expect(steps.join('\n'), 'the security job no longer runs gitleaks').toContain(
-      'gitleaks/gitleaks-action',
+      'ghcr.io/gitleaks/gitleaks@sha256:',
     );
+    // A gitleaks step that drops `--exit-code 1` reports green over a
+    // finding; one that drops `--redact` prints the secret in the log. A
+    // ` #` inside the command starts a shell comment that silently drops
+    // every argument after it, so the flags are read before any ` #`.
+    const step = steps.find((text) => text.includes('ghcr.io/gitleaks/gitleaks@sha256:')) ?? '';
+    const gitleaks = step.split(' #')[0] ?? '';
+    for (const flag of ['detect --source', '--redact', '--exit-code 1']) {
+      expect(gitleaks, `the CI gitleaks step lost \`${flag}\``).toContain(flag);
+    }
     expect(steps.join('\n'), 'the security job no longer runs osv-scanner').toContain(
       'google/osv-scanner-action',
     );
