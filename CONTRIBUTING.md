@@ -1,8 +1,21 @@
 # Contributing
 
-Thanks for contributing! This project stays small and strict on purpose.
+## How to contribute
 
-## Development setup
+Issues are welcome: bug reports, questions and ideas. Pull requests from
+outside contributors are not accepted for now: the maintainers write all
+changes themselves, so every change is written and reviewed by the maintainers.
+A pull request from outside may be closed without review. Open an issue describing the change instead.
+
+- For how to write a good issue, see the
+  [SureForgeTech contributing guide](https://github.com/SureForgeTech/.github/blob/main/CONTRIBUTING.md).
+- Do not report security problems in a public issue; follow
+  [SECURITY.md](SECURITY.md).
+
+The rest of this document is for maintainers. This project stays small and
+strict on purpose.
+
+## For maintainers: development setup
 
 ```bash
 git clone https://github.com/SureForgeTech/sureforge-cfr.git
@@ -30,7 +43,7 @@ Nothing else is needed: the OpenAPI contract suite parses `docs/openapi.yaml`
 with the `yaml` package from this repository's own devDependencies, so no
 Python interpreter or PyYAML is involved.
 
-## Workflow
+## For maintainers: workflow
 
 1. Open an issue first for anything beyond small fixes.
 2. Branch from `main`: `git checkout -b fix/short-description`.
