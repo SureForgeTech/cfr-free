@@ -1424,6 +1424,44 @@ describe('Store ranking: exception demotion and citation tie-break', () => {
   });
 });
 
+describe('Store read-only schema validation', () => {
+  it.each([
+    {
+      sql: 'ALTER TABLE sections DROP COLUMN issue_date',
+      missing: 'the sections table is missing the issue_date column',
+    },
+    {
+      sql: 'ALTER TABLE sections DROP COLUMN issue_date; ALTER TABLE sections DROP COLUMN path',
+      missing: 'the sections table is missing the path, issue_date columns',
+    },
+    {
+      sql: 'DROP TABLE section_references; DROP TABLE sections_fts',
+      missing: 'the file is missing the section_references, sections_fts objects',
+    },
+  ])('refuses a current-schema index when $missing', ({ sql, missing }) => {
+    const temp = openTempStore({ seed: false });
+    try {
+      const snapshot = path.join(temp.dir, 'incomplete.sqlite');
+      temp.store.backupTo(snapshot);
+      const db = new DatabaseSync(snapshot);
+      try {
+        db.exec(sql);
+        expect(db.prepare('PRAGMA user_version').get()).toMatchObject({
+          user_version: SCHEMA_VERSION,
+        });
+      } finally {
+        db.close();
+      }
+
+      const before = readFileSync(snapshot);
+      expect(() => Store.open(snapshot, { readOnly: true })).toThrow(missing);
+      expect(readFileSync(snapshot)).toEqual(before);
+    } finally {
+      temp.cleanup();
+    }
+  });
+});
+
 describe('Store transaction and integrity edge cases', () => {
   it('propagates non-busy BEGIN failures raw', () => {
     const temp = openTempStore();
