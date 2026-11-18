@@ -446,14 +446,17 @@ describe('syncIndex change reporting', () => {
   it('commits last_changes inside the rebuild transaction, not as a second write', async () => {
     const deps = makeDeps(makeFetch());
     try {
-      const replace = vi.spyOn(deps.store, 'replaceAllWithBaseline');
+      const replace = vi.spyOn(deps.store, 'replaceTitleWithBaseline');
       const setMeta = vi.spyOn(deps.store, 'setMeta');
       await syncIndex(deps);
       expect(replace).toHaveBeenCalledTimes(1);
       // The report is a field of the SAME meta object the rebuild commits.
-      const meta = replace.mock.calls[0]?.[2] ?? {};
+      const meta = replace.mock.calls[0]?.[3] ?? {};
       expect(Object.keys(meta)).toContain('last_changes');
       expect(meta.last_changes).toBe(deps.store.getMeta('last_changes'));
+      // The per-title copy rides the same object, stamped for Title 38.
+      expect(Object.keys(meta)).toContain('title.38.last_changes');
+      expect(meta['title.38.last_changes']).toBe(deps.store.getMeta('title.38.last_changes'));
       // No separate post-commit write could orphan it from the new index.
       expect(setMeta.mock.calls.some(([key]) => key === 'last_changes')).toBe(false);
       replace.mockRestore();
@@ -478,16 +481,17 @@ describe('syncIndex change reporting', () => {
 
       // 2) Simulate a concurrent writer committing into the window between a
       //    pre-transaction snapshot and BEGIN IMMEDIATE: the spy fires exactly
-      //    at transaction entry and overwrites issue_date there. With a
-      //    PRE-transaction snapshot the report would still carry issue date A;
-      //    with the snapshot INSIDE the transaction it sees the interleaved
-      //    write.
+      //    at transaction entry and overwrites the title's issue date there.
+      //    With a PRE-transaction snapshot the report would still carry issue
+      //    date A; with the snapshot INSIDE the transaction it sees the
+      //    interleaved write. (The per-title key is the canonical baseline
+      //    record; the legacy global key is its Title-38-era fallback.)
       let fired = false;
       const original = temp.store.transaction.bind(temp.store);
       const spy = vi.spyOn(temp.store, 'transaction').mockImplementation((fn) => {
         if (!fired) {
           fired = true;
-          temp.store.setMeta('issue_date', 'SENTINEL');
+          temp.store.setMeta('title.38.issue_date', 'SENTINEL');
         }
         original(fn);
       });
@@ -759,20 +763,253 @@ describe('syncIndex corpus receipt', () => {
   it('commits the receipt inside the rebuild transaction, not as a second write', async () => {
     const deps = makeDeps(makeFetch());
     try {
-      const replace = vi.spyOn(deps.store, 'replaceAllWithBaseline');
+      const replace = vi.spyOn(deps.store, 'replaceTitleWithBaseline');
       const setMeta = vi.spyOn(deps.store, 'setMeta');
       await syncIndex(deps);
       expect(replace).toHaveBeenCalledTimes(1);
       // The receipt is a field of the SAME meta object the rebuild commits.
-      const meta = replace.mock.calls[0]?.[2] ?? {};
+      const meta = replace.mock.calls[0]?.[3] ?? {};
       expect(Object.keys(meta)).toContain('corpus_hash');
       expect(meta.corpus_hash).toBe(deps.store.getMeta('corpus_hash'));
+      expect(Object.keys(meta)).toContain('title.38.corpus_hash');
       // No separate post-commit write could orphan it from the new index.
       expect(setMeta.mock.calls.some(([key]) => key === 'corpus_hash')).toBe(false);
       replace.mockRestore();
       setMeta.mockRestore();
     } finally {
       deps.temp.cleanup();
+    }
+  });
+});
+
+const TITLE_32_ISSUE_DATE = '2026-11-06';
+
+const TITLE_32_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<ECFR>
+<DIV1 N="32" TYPE="TITLE"><HEAD>Title 32—National Defense</HEAD>
+<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>
+<DIV5 N="70" TYPE="PART"><HEAD>Part 70</HEAD>
+<DIV8 N="70.3" TYPE="SECTION"><HEAD>§ 70.3 Definitions.</HEAD><P>National defense terms.</P></DIV8>
+</DIV5>
+</DIV3>
+</DIV1></ECFR>`;
+
+const TITLE_32_STRUCTURE = {
+  type: 'title',
+  identifier: '32',
+  label: 'Title 32—National Defense',
+  children: [
+    {
+      type: 'chapter',
+      identifier: 'I',
+      label: 'Chapter I',
+      children: [
+        {
+          type: 'part',
+          identifier: '70',
+          label: 'Part 70',
+          children: [{ type: 'section', identifier: '70.3', label: '§ 70.3', children: [] }],
+        },
+      ],
+    },
+  ],
+};
+
+interface TitleFetchOptions {
+  /** Replace the Title 32 full-title body (a second sync's amendment). */
+  title32Xml?: string;
+  /** Fail the Title 32 full-title fetch with HTTP 500. */
+  failTitle32Full?: boolean;
+}
+
+/**
+ * A stub eCFR that serves BOTH titles: titles.json carries schedule entries
+ * for 38 and 32, and the structure/full routes answer per `title-N` path
+ * segment. Proves syncIndex resolves title-scoped URLs end to end.
+ */
+function makeTitleFetch(options: TitleFetchOptions = {}): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/titles.json')) {
+      return json({
+        titles: [
+          {
+            number: 32,
+            name: 'National Defense',
+            latest_issue_date: TITLE_32_ISSUE_DATE,
+            up_to_date_as_of: TITLE_32_ISSUE_DATE,
+            latest_amended_on: TITLE_32_ISSUE_DATE,
+          },
+          {
+            number: 38,
+            name: 'Pensions, Bonuses, and Veterans\u2019 Relief',
+            latest_issue_date: '2026-08-27',
+            up_to_date_as_of: ISSUE_DATE,
+            latest_amended_on: '2026-08-27',
+          },
+        ],
+      });
+    }
+    if (url.pathname.includes('/structure/')) {
+      return json(url.pathname.includes('title-32') ? TITLE_32_STRUCTURE : FIXTURE_STRUCTURE);
+    }
+    if (url.pathname.includes('/full/')) {
+      if (url.pathname.includes('title-32')) {
+        if (options.failTitle32Full) return new Response('upstream exploded', { status: 500 });
+        return new Response(options.title32Xml ?? TITLE_32_XML, {
+          status: 200,
+          headers: { 'content-type': 'application/xml' },
+        });
+      }
+      return new Response(FULL_XML, {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    }
+    return new Response('not found', { status: 404 });
+  };
+}
+
+describe('syncIndex multi-title (Title 32)', () => {
+  it('stores title-32 rows and per-title meta without touching title 38 or the global keys', async () => {
+    const temp = openTempStore(); // seeded: 4 fixture rows + global meta, all Title 38
+    const logger = createTestLogger();
+    try {
+      const report = await syncIndex({
+        ecfr: makeEcfr(makeTitleFetch()),
+        store: temp.store,
+        logger,
+        title: 32,
+      });
+      expect(report.title).toBe(32);
+      expect(report.issueDate).toBe(TITLE_32_ISSUE_DATE);
+      expect(report.sections).toBe(1);
+      // The seeded Title 38 rows survived the scoped rebuild.
+      expect(temp.store.countSections()).toBe(FIXTURE_SECTIONS.length);
+      expect(temp.store.countSections(32)).toBe(1);
+      expect(temp.store.countAllSections()).toBe(FIXTURE_SECTIONS.length + 1);
+      const stored32 = temp.store.getSection('70.3', 'section', 32);
+      expect(stored32?.title).toBe(32);
+      expect(stored32?.issueDate).toBe(TITLE_32_ISSUE_DATE);
+      expect(temp.store.getSection('4.125', 'section')).not.toBeNull();
+      // Per-title meta keys describe Title 32...
+      expect(temp.store.getMeta('title.32.issue_date')).toBe(TITLE_32_ISSUE_DATE);
+      expect(temp.store.getMeta('title.32.appendices_count')).toBe('0');
+      expect(temp.store.getMeta('title.32.structure_expected_sections')).toBe('1');
+      expect(temp.store.getMeta('title.32.structure_expected_appendices')).toBe('0');
+      expect(
+        (
+          JSON.parse(temp.store.getMeta('title.32.structure_json') ?? '{}') as {
+            identifier: string;
+          }
+        ).identifier,
+      ).toBe('32');
+      expect(temp.store.getMeta('title.32.corpus_hash')).toMatch(/^[0-9a-f]{64}$/);
+      expect(temp.store.getMeta('title.32.last_changes')).not.toBeNull();
+      expect(temp.store.getMeta('title.32.parser_version')).toBe(PARSER_VERSION);
+      // ...and the legacy Title 38 / global keys are exactly as the seed left
+      // them: a Title 32 sync must not stomp the Title 38 read surface.
+      expect(temp.store.getMeta('issue_date')).toBe('2026-10-09');
+      expect(
+        (JSON.parse(temp.store.getMeta('structure_json') ?? '{}') as { identifier: string })
+          .identifier,
+      ).toBe('38');
+      expect(temp.store.getMeta('parser_version')).toBe('1');
+      expect(temp.store.getMeta('corpus_hash')).toBeNull();
+      expect(temp.store.getMeta('last_changes')).toBeNull();
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('scopes the change baseline to one title: a sibling title is neither added nor removed', async () => {
+    const temp = openTempStore(); // seeded Title 38 rows exist
+    const logger = createTestLogger();
+    try {
+      // First Title 32 sync: baseline against an empty Title 32 slice, NOT
+      // against the Title 38 rows that share the table.
+      const first = await syncIndex({
+        ecfr: makeEcfr(makeTitleFetch()),
+        store: temp.store,
+        logger,
+        title: 32,
+      });
+      expect(first.changes).toEqual({ changed: 0, added: 0, removed: 0 });
+      const baseline = JSON.parse(temp.store.getMeta('title.32.last_changes') ?? '{}') as {
+        baseline: boolean;
+      };
+      expect(baseline.baseline).toBe(true);
+
+      // Second Title 32 sync with one amended provision: exactly one change,
+      // zero added/removed — the untouched Title 38 rows in the same table
+      // never appear in this title's diff.
+      const amended = TITLE_32_XML.replace(
+        '<P>National defense terms.</P>',
+        '<P>National defense terms, amended.</P>',
+      );
+      const second = await syncIndex({
+        ecfr: makeEcfr(makeTitleFetch({ title32Xml: amended })),
+        store: temp.store,
+        logger,
+        title: 32,
+      });
+      expect(second.changes).toEqual({ changed: 1, added: 0, removed: 0 });
+      const changes = JSON.parse(temp.store.getMeta('title.32.last_changes') ?? '{}') as {
+        changedCitations: string[];
+        fromIssueDate: string | null;
+        toIssueDate: string;
+      };
+      expect(changes.changedCitations).toEqual(['70.3']);
+      expect(changes.fromIssueDate).toBe(TITLE_32_ISSUE_DATE);
+      expect(changes.toIssueDate).toBe(TITLE_32_ISSUE_DATE);
+      // Title 38's rows and meta still untouched.
+      expect(temp.store.getMeta('title.38.issue_date')).toBe('2026-10-09');
+      expect(temp.store.getSection('4.125', 'section')?.text).toContain('DSM-5');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('fails a title-32 sync without touching committed title-38 rows', async () => {
+    const temp = openTempStore();
+    const logger = createTestLogger();
+    try {
+      await expect(
+        syncIndex({
+          ecfr: makeEcfr(makeTitleFetch({ failTitle32Full: true })),
+          store: temp.store,
+          logger,
+          title: 32,
+        }),
+      ).rejects.toThrow(/HTTP 500/);
+      expect(temp.store.countSections()).toBe(FIXTURE_SECTIONS.length);
+      expect(temp.store.getMeta('title.32.issue_date')).toBeNull();
+      expect(temp.store.getMeta('issue_date')).toBe('2026-10-09');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('records the title-38 legacy keys when syncing the default title', async () => {
+    const temp = openTempStore({ seed: false });
+    const logger = createTestLogger();
+    try {
+      const report = await syncIndex({
+        ecfr: makeEcfr(makeTitleFetch()),
+        store: temp.store,
+        logger,
+      });
+      expect(report.title).toBe(38);
+      // The default sync keeps the whole legacy meta surface working...
+      expect(temp.store.getMeta('issue_date')).toBe(ISSUE_DATE);
+      expect(temp.store.getMeta('corpus_hash')).toBe(report.corpusHash);
+      expect(temp.store.getMeta('last_changes')).not.toBeNull();
+      // ...alongside the per-title keys other titles also get.
+      expect(temp.store.getMeta('title.38.issue_date')).toBe(ISSUE_DATE);
+      expect(temp.store.getMeta('title.38.corpus_hash')).toBe(report.corpusHash);
+      expect(temp.store.getMeta('title.38.last_changes')).toBe(temp.store.getMeta('last_changes'));
+    } finally {
+      temp.cleanup();
     }
   });
 });

@@ -8,8 +8,7 @@ import { Store } from '../core/store.js';
 import { createShutdownController } from '../process-utils.js';
 import { createHttpServer, type DiskSnapshot } from '../titan/http-server.js';
 import { openDemoStore } from '../core/demo-data.js';
-import { syncIndex } from '../core/sync.js';
-import { ensureIndex, createEcfrApi } from './ensure-index.js';
+import { ensureIndex, createEcfrApi, syncAllTitles } from './ensure-index.js';
 import { startRefreshScheduler } from './refresh-scheduler.js';
 
 function listenErrorMessage(error: unknown, config: AppConfig): string {
@@ -127,7 +126,10 @@ export async function runServeCommand(
             logger,
             refresh: async () => {
               try {
-                await syncIndex({ ecfr, store, logger });
+                // Every configured title, in the same order the startup
+                // sync used: a refresh that covered only Title 38 would
+                // leave the other titles stale.
+                await syncAllTitles(store, config, logger, { createEcfr: () => ecfr });
               } finally {
                 // Re-stat the volume regardless of the sync outcome: capacity
                 // visibility must not hinge on sync success. probeDisk never
