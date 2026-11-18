@@ -55,6 +55,28 @@ export interface SectionRow {
   readonly issueDate: string;
 }
 
+/**
+ * Structural Citation Support (SCS) — the diagnostic vector (G, P, I) from
+ * docs/research/ranking-instrument-design-2026-11-01.md §3.1, computed from
+ * the materialized `section_references` edges. Diagnostic output only: no
+ * search ranking key or candidate-set query ever reads it.
+ */
+export interface CitationSupport {
+  /**
+   * G(s) — distinct citing sections whose non-null, non-empty `part` AND
+   * `subject_group` exactly equal the cited section's own.
+   */
+  readonly subjectGroup: number;
+  /**
+   * P(s) — distinct citing sections whose non-null, non-empty `part` exactly
+   * equals the cited section's own. Missing/empty metadata on either side
+   * never wildcard-matches: such a citing section counts toward `total` only.
+   */
+  readonly part: number;
+  /** I(s) — distinct citing sections overall (self-citations excluded). */
+  readonly total: number;
+}
+
 export interface SearchHit {
   readonly citation: string;
   readonly heading: string;
@@ -76,6 +98,17 @@ export interface SearchQuery {
   readonly part?: string | undefined;
   readonly kind?: SectionKind | undefined;
   readonly chapter?: string | undefined;
+  /**
+   * The CFR title the search runs in (default {@link DEFAULT_TITLE}).
+   *
+   * The search is scoped to ONE authority: the store holds every enabled
+   * title's rows, and a citation may exist in more than one of them. An
+   * unscoped search would mix authorities in one result list and label every
+   * hit with the serving title's display form — so the scope is bound here
+   * and carried through the candidate count, the AND tier and the ranked
+   * rows alike.
+   */
+  readonly title?: number | undefined;
 }
 
 export interface SearchOutcome {
@@ -201,6 +234,38 @@ JOIN sections s ON s.id = r.citing_id
 WHERE r.cited_citation = ? AND r.citing_title = ?
 ORDER BY s.citation`;
 
+// Structural Citation Support (design doc §3.1): one pass over the
+// materialized edges for one cited citation of one title. `c` is the citing
+// section; `s` (LEFT JOIN) is the cited section, whose part/subject_group
+// define the P/G neighbourhoods — absent from the index, it contributes to
+// `total` only, the same "missing metadata never wildcard-matches" rule as an
+// empty value. count(DISTINCT citing_id) makes repeated references from one
+// citing section count once, and the s.id guard drops self-citations.
+//
+// The title scope is the citing row's title, exactly like citedBy: an edge
+// never crosses titles, so "§ 4.105" in a Title 32 section means Title 32's
+// § 4.105. The cited section is therefore resolved in that same title (the
+// join keys on r.citing_title), and a title that has no such provision
+// leaves its part/subject_group unknown — a count toward `total` only.
+const CITATION_SUPPORT_SQL = `
+SELECT
+  count(DISTINCT r.citing_id) AS total,
+  count(DISTINCT CASE
+    WHEN c.part IS NOT NULL AND c.part <> '' AND c.part = s.part THEN r.citing_id
+  END) AS part,
+  count(DISTINCT CASE
+    WHEN c.part IS NOT NULL AND c.part <> ''
+     AND c.subject_group IS NOT NULL AND c.subject_group <> ''
+     AND c.part = s.part AND c.subject_group = s.subject_group
+    THEN r.citing_id
+  END) AS subject_group
+FROM section_references r
+JOIN sections c ON c.id = r.citing_id
+LEFT JOIN sections s
+  ON s.title = r.citing_title AND s.citation = r.cited_citation
+WHERE r.cited_citation = ? AND r.citing_title = ?
+  AND (s.id IS NULL OR r.citing_id <> s.id)`;
+
 // Full-corpus read for the export command: same row shape as getSection
 // (SELECT * + toSectionRow), citation-ordered like the repo's other
 // citation listing (CITED_BY_SQL).
@@ -265,8 +330,8 @@ const SCORE_EXPR = 'bm25(sections_fts, 10.0, 5.0, 1.0) AS score';
  * CTE precedes the main SELECT in the statement text.
  */
 const AND_TIER_CTE = `
-WITH and_hits(citation) AS (
-  SELECT s.citation
+WITH and_hits(rowid) AS (
+  SELECT s.id
   FROM sections_fts
   JOIN sections s ON s.id = sections_fts.rowid
   WHERE sections_fts MATCH ?
@@ -277,7 +342,7 @@ WITH and_hits(citation) AS (
  * when it matches only some. Sorted DESC, it puts the rows that answered
  * the whole question ahead of the rows that answered part of it.
  */
-const AND_TIER_KEY = '(CASE WHEN a.citation IS NOT NULL THEN 1 ELSE 0 END) DESC';
+const AND_TIER_KEY = '(CASE WHEN a.rowid IS NOT NULL THEN 1 ELSE 0 END) DESC';
 
 /**
  * The ranked-search statement.
@@ -294,7 +359,7 @@ SELECT s.citation, s.heading, s.part, s.path, s.issue_date AS issue_date, ${SNIP
        ${SCORE_EXPR}
 FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
-LEFT JOIN and_hits a ON a.citation = s.citation
+LEFT JOIN and_hits a ON a.rowid = s.id
 WHERE sections_fts MATCH ?${where}
 ORDER BY ${orderBy}score, s.citation
 LIMIT ? OFFSET ?`;
@@ -326,17 +391,23 @@ function presentFilters(query: SearchQuery): SearchFilter[] {
   return filters;
 }
 
-/** ` AND s.x = ? …` WHERE tail for the filters; values bind separately. */
+/**
+ * The WHERE tail for a search: the title scope first, then the optional
+ * filters, each a bound value.
+ *
+ * The TITLE SCOPE is part of the tail rather than a separate clause so the
+ * candidate count and the ranked rows cannot drift apart: both build their
+ * tail here, and a query that forgot the scope would have to forget it in
+ * one place only. `s.title = ?` is a fixed column name with a bound value,
+ * so the title never reaches the SQL text.
+ */
 function filterClause(filters: readonly SearchFilter[]): string {
-  return filters.map(([name]) => ` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`).join('');
+  const scope = ' AND s.title = ?';
+  const tail = filters.map(([name]) => ` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`).join('');
+  return scope + tail;
 }
 
-const COUNT_MATCHES_SQL = `
-SELECT count(*) AS n
-FROM sections_fts
-WHERE sections_fts MATCH ?`;
-
-const COUNT_MATCHES_FILTERED_SQL = (where: string): string => `
+const COUNT_MATCHES_SQL = (where: string): string => `
 SELECT count(*) AS n
 FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
@@ -835,19 +906,61 @@ export class Store {
    * Atomically replace the entire index while running `baseline` INSIDE the
    * same IMMEDIATE transaction, BEFORE the wipe.
    *
-   * The baseline callback reads the OUTGOING index (previous issue date,
-   * previous text hashes) only after the write lock is held: a concurrent
-   * writer can no longer commit its own index between the snapshot and the
-   * rebuild, so the advisory change report always describes the exact state
-   * this call replaced (scout #3 / batch-5 R3). The callback's return value
-   * is handed back to the caller, and any meta it writes participates in the
-   * same COMMIT.
+   * Delegates to {@link replaceTitleWithBaseline}'s shared machinery with a
+   * whole-index scope: every row is wiped and reinserted, and the rows keep
+   * their own `section.title` stamps (or the {@link DEFAULT_TITLE} default).
    *
-   * Ordering: callback first, then DELETE → INSERT → meta upserts — the
-   * baseline must see pre-wipe rows, and everything it reads is pinned by
-   * BEGIN IMMEDIATE until COMMIT.
+   * @deprecated New write paths that serve a multi-title index should prefer
+   * {@link replaceTitleWithBaseline}, which preserves the other titles' rows
+   * and meta. Retained for single-title fixture seeds and the demo store.
    */
   replaceAllWithBaseline<T>(
+    sections: readonly RawSection[],
+    issueDate: string,
+    meta: Readonly<Record<string, string>>,
+    baseline: (store: Store) => T,
+  ): T {
+    return this.replaceScoped(null, sections, issueDate, meta, baseline);
+  }
+
+  /**
+   * Atomically replace ONE title's slice of the index while running
+   * `baseline` INSIDE the same IMMEDIATE transaction, BEFORE the wipe.
+   *
+   * The scope is exactly `sections WHERE title = ?`: rows, edges (citing_id
+   * cascades) and the title's own meta are replaced, while every other
+   * title's rows and meta are preserved untouched — a Title 32 sync can
+   * never wipe a Title 38 index. The inserted rows are stamped with `title`
+   * (NOT each section's own stamp: the caller names the authority this
+   * rebuild serves), and `title.<N>.issue_date` is upserted alongside the
+   * passed meta.
+   *
+   * The baseline callback reads the OUTGOING slice (previous per-title issue
+   * date, per-title text hashes) only after the write lock is held, exactly
+   * as {@link replaceAllWithBaseline} does for the whole index; its return
+   * value is handed back and any meta it writes rides the same COMMIT.
+   */
+  replaceTitleWithBaseline<T>(
+    title: number,
+    sections: readonly RawSection[],
+    issueDate: string,
+    meta: Readonly<Record<string, string>>,
+    baseline: (store: Store) => T,
+  ): T {
+    return this.replaceScoped(title, sections, issueDate, meta, baseline);
+  }
+
+  /**
+   * The shared rebuild transaction behind both public replacement methods.
+   *
+   * `scope` is `null` for the whole index ({@link replaceAllWithBaseline})
+   * or one title number ({@link replaceTitleWithBaseline}). Ordering:
+   * callback first, then DELETE → INSERT → meta upserts — the baseline must
+   * see pre-wipe rows, and everything it reads is pinned by BEGIN IMMEDIATE
+   * until COMMIT.
+   */
+  private replaceScoped<T>(
+    scope: number | null,
     sections: readonly RawSection[],
     issueDate: string,
     meta: Readonly<Record<string, string>>,
@@ -856,13 +969,17 @@ export class Store {
     let result!: T;
     this.transaction(() => {
       result = baseline(this);
-      // The sections wipe also clears every edge: citing_id cascades
-      // (PRAGMA foreign_keys is pinned ON in open()).
-      this.db.exec('DELETE FROM sections');
+      // The scoped wipe clears only this title's rows; their edges cascade
+      // with them (PRAGMA foreign_keys is pinned ON in open()).
+      if (scope === null) {
+        this.db.exec('DELETE FROM sections');
+      } else {
+        this.stmt('DELETE FROM sections WHERE title = ?').run(scope);
+      }
       const insert = this.stmt(INSERT_SECTION_SQL);
       const insertReference = this.stmt(INSERT_SECTION_REFERENCE_SQL);
       for (const section of sections) {
-        const title = section.title ?? DEFAULT_TITLE;
+        const title = scope ?? section.title ?? DEFAULT_TITLE;
         const { lastInsertRowid } = insert.run(
           title,
           section.citation,
@@ -889,17 +1006,44 @@ export class Store {
       }
       const upsert = this.stmt(UPSERT_META_SQL);
       for (const [key, value] of Object.entries(meta)) upsert.run(key, value);
-      // Per-title issue dates alongside the legacy Title-38 `issue_date` key
-      // (meta keys `title.<N>.issue_date`); legacy readers keep working until
-      // the wire PR moves them onto the per-title keys.
-      for (const title of new Set(sections.map((section) => section.title ?? DEFAULT_TITLE))) {
-        upsert.run(`title.${title}.issue_date`, issueDate);
+      if (scope !== null) {
+        // The scoped rebuild records its own authority's issue date; the
+        // other titles' meta keys are left exactly as they were.
+        upsert.run(`title.${scope}.issue_date`, issueDate);
+      } else {
+        // Per-title issue dates alongside the legacy Title-38 `issue_date` key
+        // (meta keys `title.<N>.issue_date`); legacy readers keep working until
+        // the wire PR moves them onto the per-title keys.
+        for (const title of new Set(sections.map((section) => section.title ?? DEFAULT_TITLE))) {
+          upsert.run(`title.${title}.issue_date`, issueDate);
+        }
       }
     });
     return result;
   }
 
-  countSections(): number {
+  /**
+   * How many rows one title's slice holds (default {@link DEFAULT_TITLE}).
+   *
+   * The count is title-scoped because the drift check compares it with the
+   * structure expectations recorded for THAT title: an all-titles count
+   * against one title's expectations reports a healthy multi-title index as
+   * degraded.
+   */
+  countSections(title: number = DEFAULT_TITLE): number {
+    const row = this.stmt('SELECT count(*) AS n FROM sections WHERE title = ?').get(title) as
+      Record<string, unknown> | undefined;
+    return row ? Number(row['n'] ?? 0) : 0;
+  }
+
+  /**
+   * How many rows the whole store holds, every title included.
+   *
+   * The export path uses this: a snapshot copy carries EVERY title's rows,
+   * so the count it reports must be the count of what it wrote, not one
+   * title's slice.
+   */
+  countAllSections(): number {
     const row = this.stmt('SELECT count(*) AS n FROM sections').get() as
       Record<string, unknown> | undefined;
     return row ? Number(row['n'] ?? 0) : 0;
@@ -931,6 +1075,9 @@ export class Store {
    * writers serialize immediately. Unlike `captureTextHashes` (folded into
    * a hash map, so it batches to bound memory), callers here need the text
    * itself, so the rows are returned in one array by design.
+   *
+   * The rows carry their own `title`, so a multi-title store's export says
+   * which authority every provision belongs to instead of blending them.
    */
   allSections(): SectionRow[] {
     const rows = this.stmt(SELECT_ALL_SECTIONS_SQL).all() as Record<string, unknown>[];
@@ -1004,6 +1151,30 @@ export class Store {
   citedBy(citation: string, title: number = DEFAULT_TITLE): string[] {
     const rows = this.stmt(CITED_BY_SQL).all(citation, title) as Record<string, unknown>[];
     return rows.map((row) => String(row['citation']));
+  }
+
+  /**
+   * Structural Citation Support for one citation of `title` (default
+   * {@link DEFAULT_TITLE}): the (G, P, I) diagnostic vector computed over the
+   * materialized edges, scoped to one authority exactly like {@link citedBy}.
+   * Query-independent and deterministic: the same index always yields the
+   * same vector. Zero is a real value — a section nothing cites reports
+   * (0, 0, 0).
+   *
+   * `total` is I(s) — distinct citing sections, self-citations excluded;
+   * `part` is P(s) — those sharing the cited section's part; and
+   * `subjectGroup` is G(s) — those sharing its part AND subject group. A
+   * missing or empty `part`/`subject_group` on either side never wildcard-
+   * matches: that citing section counts toward `total` only.
+   */
+  citationSupport(citation: string, title: number = DEFAULT_TITLE): CitationSupport {
+    const row = this.stmt(CITATION_SUPPORT_SQL).get(citation, title) as
+      Record<string, unknown> | undefined;
+    return {
+      subjectGroup: row === undefined ? 0 : Number(row['subject_group'] ?? 0),
+      part: row === undefined ? 0 : Number(row['part'] ?? 0),
+      total: row === undefined ? 0 : Number(row['total'] ?? 0),
+    };
   }
 
   /**
@@ -1082,11 +1253,12 @@ export class Store {
     return row ? toSectionRow(row) : null;
   }
 
-  private countMatches(ftsQuery: string, filters: readonly SearchFilter[]): number {
-    const sql =
-      filters.length === 0 ? COUNT_MATCHES_SQL : COUNT_MATCHES_FILTERED_SQL(filterClause(filters));
-    const row = this.stmt(sql).get(ftsQuery, ...filters.map(([, value]) => value)) as
-      Record<string, unknown> | undefined;
+  private countMatches(ftsQuery: string, filters: readonly SearchFilter[], title: number): number {
+    const row = this.stmt(COUNT_MATCHES_SQL(filterClause(filters))).get(
+      ftsQuery,
+      title,
+      ...filters.map(([, value]) => value),
+    ) as Record<string, unknown> | undefined;
     return row ? Number(row['n'] ?? 0) : 0;
   }
 
@@ -1118,6 +1290,7 @@ export class Store {
     const perPage = Math.max(1, query.perPage);
     const offset = (Math.max(1, query.page) - 1) * perPage;
     const filters = presentFilters(query);
+    const title = query.title ?? DEFAULT_TITLE;
 
     // ONE parse of the query feeds both tiers: the candidate query (OR) and
     // the AND-tier membership query (AND) are the same fragments joined
@@ -1131,7 +1304,7 @@ export class Store {
     }
     const { or: orQuery, and: andQuery } = queries;
 
-    const total = this.countMatches(orQuery, filters);
+    const total = this.countMatches(orQuery, filters, title);
     if (total === 0) {
       return { hits: [], total: 0, page: query.page, perPage, matchMode: 'or' };
     }
@@ -1145,6 +1318,7 @@ export class Store {
     const rows = this.stmt(sql).all(
       andQuery,
       orQuery,
+      title,
       ...filters.map(([, value]) => value),
       ...key.params,
       perPage,
@@ -1189,19 +1363,31 @@ export class Store {
     return row !== undefined;
   }
 
-  /** Every part present in the index, with per-kind counts. */
-  listParts(): { part: string; sections: number; appendices: number }[] {
+  /**
+   * Every part present in ONE title's slice of the index, with per-kind
+   * counts.
+   *
+   * The counts are scoped to a title (default {@link DEFAULT_TITLE}): the
+   * store holds every enabled title's rows, and a part number can appear
+   * in more than one of them. A combined count would report a Title 38
+   * part's sections under Title 38's structure tree.
+   */
+  listParts(title: number = DEFAULT_TITLE): {
+    part: string;
+    sections: number;
+    appendices: number;
+  }[] {
     const rows = this.stmt(
       `
       SELECT part,
              SUM(kind = 'section') AS sections,
              SUM(kind = 'appendix') AS appendices
       FROM sections
-      WHERE part IS NOT NULL AND part != ''
+      WHERE title = ? AND part IS NOT NULL AND part != ''
       GROUP BY part
       ORDER BY CAST(part AS INTEGER), part
     `,
-    ).all() as Record<string, unknown>[];
+    ).all(title) as Record<string, unknown>[];
     return rows.map((row) => ({
       part: String(row['part']),
       sections: Number(row['sections'] ?? 0),

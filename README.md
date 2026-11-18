@@ -41,11 +41,17 @@ keys, no telemetry — one Node process and one SQLite file.
   `docs/research/retrieval-baseline-2026-10-20.md`.
 - **Freshness tracking**: the index records the eCFR issue date it was built
   from and warns when it goes stale or drifts from the structure tree.
+- **One store, several titles**: `CFR_TITLES` names the CFR titles a sync
+  covers (Title 38 by default). Each title's provisions are stored under its
+  own authority — a Title 32 sync never touches Title 38's rows — with
+  per-title issue dates, structure and corpus receipts. Reads still default to
+  Title 38.
 - **Backup-friendly**: `cfr-free export <path> [jsonl|md]` writes a consistent
   snapshot of the index you can copy anywhere (sqlite default; `jsonl` and `md`
-  for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
-  SQLite snapshots offline — added, removed and changed provisions with dated
-  source links and bounded text-change hunks.
+  for pipeline ingestion). `cfr-free compare <from> <to>` and the
+  `compare_snapshots` MCP tool compare two stored SQLite snapshots offline,
+  reporting added, removed and changed provisions with dated source links
+  and bounded text-change hunks.
 - **Verifiable copies**: `cfr-free verify [snapshot]` checks that a local index
   or a stored snapshot opens cleanly and that the corpus receipt it records
   still describes its own Title 38 rows — offline, and without touching the
@@ -190,6 +196,8 @@ node dist/cli.js export ./backup.sqlite   # consistent snapshot of the local ind
 node dist/cli.js search PTSD               # ranked provisions from the local index
 
 node dist/cli.js diff 2026-01-01 2026-06-01   # provision changes between two issue dates
+node dist/cli.js export /tmp/old.sqlite       # store a snapshot before refreshing
+node dist/cli.js compare /tmp/old.sqlite ./backup.sqlite  # offline snapshot comparison
 node dist/cli.js redline 2026-01-01 2026-06-01 4.125   # line-level redline of one provision
 ```
 
@@ -244,13 +252,12 @@ verified /home/you/.cfr-free/index.sqlite
   note: a receipt over this index that detects ACCIDENTAL corruption of the local copy — not a signature, and no claim about the upstream text
 ```
 
-The receipt is the sha256 over the file's own per-provision content hashes
-that every rebuild records (`meta.corpus_hash`), so recomputing it from the
-rows the file holds now and comparing detects a copy whose rows moved under
-its receipt — a truncated row, a half-written sync, an edited file. It is
-also what an **absent** receipt means: a file written before the receipt
-existed, or by a build that did not write one, is readable and usable, but
-nothing can be concluded about whether its rows are the ones a sync wrote.
+The receipt is the SHA-256 digest of the file's Title 38 per-provision
+content hashes. Verify reads `title.38.corpus_hash` first and falls back to
+the legacy `corpus_hash` key. Comparing the recorded and recomputed
+digests can detect changes such as a truncated or edited row. If the receipt
+is **absent**, the file is readable and usable, but the report cannot
+establish whether its rows are the ones a sync wrote.
 
 | Situation                                                | Exit | Meaning                                                                            |
 | -------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------- |
@@ -509,6 +516,7 @@ MCP client configs stay uniform):
 | Variable            | Default                    | Meaning                                                                                           |
 | ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------- |
 | `CFR_INDEX_PATH`    | `~/.cfr-free/index.sqlite` | SQLite index location                                                                             |
+| `CFR_TITLES`        | `38`                       | CFR titles to sync (comma-separated, 1–50); each is stored under its own authority                |
 | `CFR_MAX_AGE_DAYS`  | `7`                        | Index older than this is reported stale                                                           |
 | `CFR_AUTO_SYNC`     | `1`                        | Sync at startup when index empty/stale                                                            |
 | `CFR_REFRESH_HOURS` | `0`                        | Hours between background refreshes while serving (0 = off)                                        |
@@ -572,14 +580,14 @@ eCFR API ──sync──▶ SQLite (sections + FTS5 + structure meta)
 - `src/mcp/` — MCP server and tool registrations
 - `src/titan/` — HTTP JSON API
 - `src/commands/` — one entrypoint per subcommand: `mcp`, `sync`, `diff`,
-  `redline`, `historical`, `search`, `serve`, `export`, `verify` (`help` and
+  `compare`, `redline`, `historical`, `search`, `serve`, `export`, `verify` (`help` and
   `version` dispatch from `src/cli.ts`)
 - `docs/SPEC.md` — the design authority; `docs/research/delivery-log.md` —
   the review dispositions and the closed delivery record
 
-Sync is atomic: the whole index is replaced inside one `BEGIN IMMEDIATE`
-transaction under WAL, so concurrent readers never see a partial build, and
-an interrupted sync simply rolls back.
+Sync is atomic: the title's slice of the index is replaced inside one
+`BEGIN IMMEDIATE` transaction under WAL, so concurrent readers never see a
+partial build, and an interrupted sync simply rolls back.
 
 ## Data source & attribution
 

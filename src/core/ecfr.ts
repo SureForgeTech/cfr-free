@@ -5,6 +5,12 @@ import { UpstreamFormatError } from './errors.js';
 
 /** Title handled by this service (v1 scope). */
 export const TITLE_38 = 38;
+/** National Defense — the first additional CFR title the sync supports. */
+export const TITLE_32 = 32;
+
+/** The eCFR's live range of CFR title numbers (1-50, per its titles.json). */
+const MIN_TITLE = 1;
+const MAX_TITLE = 50;
 
 const DEFAULT_BASE_URL = 'https://www.ecfr.gov';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -35,6 +41,21 @@ function assertDate(value: string): string {
   // would be collapsed into a generic 500 by the HTTP layer.
   if (!DATE_RE.test(value)) {
     throw new UpstreamFormatError(`eCFR returned an invalid date: ${value}`);
+  }
+  return value;
+}
+
+/**
+ * Validate a caller-supplied CFR title number. Unlike `assertDate` this is a
+ * USAGE fault (the title comes from our own config/deps, never from eCFR's
+ * answer), so a plain `Error` is right; `loadConfig` bounds `CFR_TITLES` to
+ * the same 1-50 range before a sync can ever start.
+ */
+function assertTitle(value: number): number {
+  if (!Number.isInteger(value) || value < MIN_TITLE || value > MAX_TITLE) {
+    throw new Error(
+      `invalid CFR title: ${value} (must be an integer between ${MIN_TITLE} and ${MAX_TITLE})`,
+    );
   }
   return value;
 }
@@ -104,9 +125,11 @@ export class EcfrApi {
   private readonly fetches: Semaphore;
   private readonly fullTitleXmlTtlMs: number;
   private readonly fullTitleXmlMemoCap: number;
-  /** Fetched documents by issue date: the same date is the same document. */
+  /** Fetched documents by title+issue date: the same title and date is the
+   *  same document — Title 32 and Title 38 never share a cache entry. */
   private readonly fullTitleXmlMemo = new Map<string, MemoEntry>();
-  /** Fetches in progress, by issue date: one fetch per date, shared by all. */
+  /** Fetches in progress, by title+issue date: one fetch per title/date,
+   *  shared by all readers of that document. */
   private readonly fullTitleXmlInFlight = new Map<string, Promise<string>>();
 
   constructor(http: HttpClient, baseUrl: string = DEFAULT_BASE_URL, options: EcfrApiOptions = {}) {
@@ -120,8 +143,9 @@ export class EcfrApi {
     this.fullTitleXmlMemoCap = Math.max(1, options.fullTitleXmlMemoCap ?? FULL_TITLE_XML_MEMO_CAP);
   }
 
-  /** Resolve Title 38's current issue date (eCFR rejects dates past it). */
-  async getTitleSchedule(): Promise<TitleSchedule> {
+  /** Resolve a title's current issue date (eCFR rejects dates past it). */
+  async getTitleSchedule(title: number = TITLE_38): Promise<TitleSchedule> {
+    const titleNumber = assertTitle(title);
     const url = new URL('/api/versioner/v1/titles.json', this.baseUrl);
     let data: z.infer<typeof titlesSchema>;
     try {
@@ -139,26 +163,31 @@ export class EcfrApi {
       }
       throw error;
     }
-    const title = data.titles.find((entry) => entry.number === TITLE_38);
-    if (!title) {
-      throw new UpstreamFormatError(`eCFR titles.json does not include title ${TITLE_38}`);
+    const entry = data.titles.find((candidate) => candidate.number === titleNumber);
+    if (!entry) {
+      throw new UpstreamFormatError(`eCFR titles.json does not include title ${titleNumber}`);
     }
-    const upToDateAsOf = title.up_to_date_as_of ?? title.latest_issue_date;
+    const upToDateAsOf = entry.up_to_date_as_of ?? entry.latest_issue_date;
     if (upToDateAsOf === null) {
-      throw new UpstreamFormatError(`eCFR reports no issue date for title ${TITLE_38}`);
+      throw new UpstreamFormatError(`eCFR reports no issue date for title ${titleNumber}`);
     }
     return { upToDateAsOf: assertDate(upToDateAsOf) };
   }
 
-  /** Fetch the full hierarchical structure of Title 38 as JSON. */
-  async getStructureJson(issueDate: string): Promise<unknown> {
+  /** Fetch the full hierarchical structure of one CFR title as JSON. */
+  async getStructureJson(issueDate: string, title: number = TITLE_38): Promise<unknown> {
     const date = assertDate(issueDate);
-    const url = new URL(`/api/versioner/v1/structure/${date}/title-${TITLE_38}.json`, this.baseUrl);
+    const titleNumber = assertTitle(title);
+    const url = new URL(
+      `/api/versioner/v1/structure/${date}/title-${titleNumber}.json`,
+      this.baseUrl,
+    );
     return this.http.getJson(url, (raw) => raw);
   }
 
   /**
-   * Fetch the complete Title 38 XML document (~2 MB, gzip on the wire).
+   * Fetch the complete XML document of one CFR title (~2 MB, gzip on the
+   * wire).
    *
    * Three bounds apply, and they are different bounds. The semaphore caps
    * how many document fetches are in flight at once — and refuses a
@@ -174,24 +203,29 @@ export class EcfrApi {
    * only, holds at most four documents for five minutes, and disappears
    * with the process. It is not a cross-process or persistent cache.
    */
-  async getFullTitleXml(issueDate: string): Promise<string> {
+  async getFullTitleXml(issueDate: string, title: number = TITLE_38): Promise<string> {
     const date = assertDate(issueDate);
-    const memoised = this.fullTitleXmlMemo.get(date);
+    const titleNumber = assertTitle(title);
+    // Title plus date: Title 32 and Title 38 documents for the same date are
+    // DIFFERENT documents and must never share a memo entry or an in-flight
+    // fetch.
+    const key = `${titleNumber}:${date}`;
+    const memoised = this.fullTitleXmlMemo.get(key);
     if (memoised !== undefined && memoised.expiresAtMs > Date.now()) {
       // A read does not extend the reuse window, but it does make the
       // document the most recently used one (the memo evicts the LEAST
       // recently used).
-      this.touchMemo(date, memoised);
+      this.touchMemo(key, memoised);
       return memoised.xml;
     }
 
-    // Single flight: a concurrent reader of the same date waits for the
-    // fetch that is already running instead of starting a second one.
-    const inFlight = this.fullTitleXmlInFlight.get(date);
+    // Single flight: a concurrent reader of the same title+date waits for
+    // the fetch that is already running instead of starting a second one.
+    const inFlight = this.fullTitleXmlInFlight.get(key);
     if (inFlight !== undefined) return inFlight;
 
-    const fetch = this.fetchFullTitleXml(date);
-    this.fullTitleXmlInFlight.set(date, fetch);
+    const fetch = this.fetchFullTitleXml(titleNumber, date);
+    this.fullTitleXmlInFlight.set(key, fetch);
     try {
       return await fetch;
     } finally {
@@ -199,20 +233,20 @@ export class EcfrApi {
       // this call creates the entry, and only this call removes it), so
       // the next reader starts a fresh fetch — a FAILED fetch is not
       // remembered.
-      this.fullTitleXmlInFlight.delete(date);
+      this.fullTitleXmlInFlight.delete(key);
     }
   }
 
   /** Fetch one document and put it in the memo. */
-  private async fetchFullTitleXml(date: string): Promise<string> {
-    const url = new URL(`/api/versioner/v1/full/${date}/title-${TITLE_38}.xml`, this.baseUrl);
+  private async fetchFullTitleXml(title: number, date: string): Promise<string> {
+    const url = new URL(`/api/versioner/v1/full/${date}/title-${title}.xml`, this.baseUrl);
     const xml = await this.fetches.run(() =>
       this.http.getText(url, {
         headers: { accept: 'application/xml, text/xml;q=0.9, */*;q=0.1' },
       }),
     );
 
-    this.touchMemo(date, { xml, expiresAtMs: Date.now() + this.fullTitleXmlTtlMs });
+    this.touchMemo(`${title}:${date}`, { xml, expiresAtMs: Date.now() + this.fullTitleXmlTtlMs });
     return xml;
   }
 
@@ -223,16 +257,16 @@ export class EcfrApi {
    * The memo is a cache, not a store: the memory it holds is bounded,
    * and the document a caller keeps asking for is the one that stays.
    */
-  private touchMemo(date: string, entry: MemoEntry): void {
+  private touchMemo(key: string, entry: MemoEntry): void {
     // `Map.set` on an existing key keeps the old insertion position, so
     // the entry is re-inserted to move it to the most-recent end.
-    this.fullTitleXmlMemo.delete(date);
-    this.fullTitleXmlMemo.set(date, entry);
+    this.fullTitleXmlMemo.delete(key);
+    this.fullTitleXmlMemo.set(key, entry);
     // The map's iteration order is insertion order, and the entry was
     // just re-inserted, so the first key is the least recently used one.
-    for (const key of this.fullTitleXmlMemo.keys()) {
+    for (const memoKey of this.fullTitleXmlMemo.keys()) {
       if (this.fullTitleXmlMemo.size <= this.fullTitleXmlMemoCap) break;
-      this.fullTitleXmlMemo.delete(key);
+      this.fullTitleXmlMemo.delete(memoKey);
     }
   }
 }

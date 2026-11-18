@@ -7,6 +7,7 @@ import { runMcpInstallCommand } from './commands/mcp-install.js';
 import { runServeCommand } from './commands/serve.js';
 import { runSyncCommand } from './commands/sync.js';
 import { runExportCommand } from './commands/export.js';
+import { formatSnapshotComparison, runCompareCommand } from './commands/compare.js';
 import { formatIssueDiff, runDiffCommand } from './commands/diff.js';
 import { formatSectionRedline, runRedlineCommand } from './commands/redline.js';
 import { formatHistoricalSection, runHistoricalCommand } from './commands/historical.js';
@@ -48,6 +49,9 @@ Usage:
   cfr-free sync           Rebuild the local index from eCFR
   cfr-free diff <from> [to]  Show provision changes between two eCFR issue dates
                              (to defaults to the index's issue date)
+  cfr-free compare <from_snapshot> <to_snapshot>  Offline comparison of two stored
+                             index snapshots (typically 'cfr-free export' copies)
+                             Options: --part P
   cfr-free redline <from> <to> <citation>  Line-level redline of one provision between
                                            two eCFR issue dates
   cfr-free historical <at> <citation>  One provision as it stood at a date (eCFR's
@@ -160,6 +164,7 @@ const KNOWN_COMMANDS = new Set([
   'demo',
   'sync',
   'diff',
+  'compare',
   'redline',
   'historical',
   'search',
@@ -187,6 +192,7 @@ export type Command =
   | 'vibe-combine'
   | 'sync'
   | 'diff'
+  | 'compare'
   | 'redline'
   | 'historical'
   | 'search'
@@ -196,7 +202,7 @@ export type Command =
   | 'help'
   | 'version';
 
-/** Parsed argv: `export`, `diff` and `redline` carry their positional arguments. */
+/** Parsed argv: positional commands carry their arguments. */
 export type ParsedCommand =
   | {
       readonly command: 'mcp-install';
@@ -235,6 +241,12 @@ export type ParsedCommand =
     }
   | { readonly command: 'verify'; readonly snapshot?: string | undefined }
   | { readonly command: 'diff'; readonly fromDate: string; readonly toDate?: string }
+  | {
+      readonly command: 'compare';
+      readonly fromPath: string;
+      readonly toPath: string;
+      readonly part?: string | undefined;
+    }
   | { readonly command: 'historical'; readonly atDate: string; readonly citation: string }
   | {
       readonly command: 'redline';
@@ -261,6 +273,7 @@ export type ParsedCommand =
         Command,
         | 'export'
         | 'diff'
+        | 'compare'
         | 'redline'
         | 'historical'
         | 'search'
@@ -322,6 +335,49 @@ function parseDiffArgs(rest: readonly string[]): ParsedCommand {
   return to === undefined
     ? { command: 'diff', fromDate: from }
     : { command: 'diff', fromDate: from, toDate: to };
+}
+
+/** A CFR part number, checked before any snapshot is opened. */
+function parseComparePart(raw: string): string {
+  if (!/^\d{1,3}$/.test(raw)) {
+    throw new CliError(`compare --part must be a CFR part number such as 4, got: ${raw}`);
+  }
+  return raw;
+}
+
+/** Parse `compare <from_snapshot> <to_snapshot> [--part P]`. */
+function parseCompareArgs(rest: readonly string[]): ParsedCommand {
+  const paths: string[] = [];
+  let part: string | undefined;
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index] as string;
+    if (arg === '--part') {
+      const value = rest[index + 1];
+      if (value === undefined || value.startsWith('-')) {
+        throw new CliError(
+          '--part requires a CFR part number (e.g. `cfr-free compare a.sqlite b.sqlite --part 4`)',
+        );
+      }
+      part = parseComparePart(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--part=')) {
+      part = parseComparePart(arg.slice(7));
+      continue;
+    }
+    if (arg.startsWith('-')) throw new CliError(`unknown option for compare: ${arg}`);
+    paths.push(arg);
+  }
+  if (paths.length !== 2) {
+    throw new CliError(
+      'compare requires a from-snapshot and a to-snapshot (e.g. `cfr-free compare old.sqlite new.sqlite`)',
+    );
+  }
+  const [fromPath, toPath] = paths as [string, string];
+  return part === undefined
+    ? { command: 'compare', fromPath, toPath }
+    : { command: 'compare', fromPath, toPath, part };
 }
 
 /** Parse `redline`'s three required positionals: from-date, to-date, citation. */
@@ -710,6 +766,7 @@ function parseDemoCommandArgs(rest: readonly string[]): ParsedCommand {
 const ARG_PARSERS = new Map<string, (rest: readonly string[]) => ParsedCommand>([
   ['export', parseExportTarget],
   ['diff', parseDiffArgs],
+  ['compare', parseCompareArgs],
   ['redline', parseRedlineArgs],
   ['historical', parseHistoricalArgs],
   ['search', parseSearchArgs],
@@ -840,7 +897,7 @@ function usageAnswer(parsed: ParsedCommand): string | undefined {
   return undefined;
 }
 
-function runVibeCoderCommand(parsed: ParsedCommand, io: MainIO): boolean {
+function runStandaloneCommand(parsed: ParsedCommand, io: MainIO): boolean {
   if (parsed.command === 'mcp-install') {
     const report = runMcpInstallCommand({
       client: parsed.client,
@@ -882,6 +939,20 @@ function runVibeCoderCommand(parsed: ParsedCommand, io: MainIO): boolean {
     io.out(formatCombineResult(result));
     return true;
   }
+  if (parsed.command === 'compare') {
+    // The comparison needs only the process log level, not the local index:
+    // both inputs are the snapshot paths the reader named.
+    const config = loadConfig(io.env);
+    const logger = io.logger ?? createLogger(config.logLevel);
+    // An offline snapshot comparison WITH results is a success: exit 0
+    // whether or not anything changed. Missing/invalid snapshots are
+    // invalid-input failures from the core comparison path.
+    const report = runCompareCommand(logger, parsed.fromPath, parsed.toPath, {
+      part: parsed.part,
+    });
+    io.out(formatSnapshotComparison(report));
+    return true;
+  }
   return false;
 }
 
@@ -892,7 +963,7 @@ function runVibeCoderCommand(parsed: ParsedCommand, io: MainIO): boolean {
  * The wording lives in one function of the report, so the command dispatch
  * stays a dispatch.
  */
-function formatSyncSummary(report: SyncReport): string {
+function formatSyncSummary(report: SyncReport, multi: boolean): string {
   const { changed, added, removed } = report.changes;
   const changes =
     changed + added + removed > 0
@@ -906,9 +977,10 @@ function formatSyncSummary(report: SyncReport): string {
       ? `; ${report.imageContentSections} provisions contain image content not included`
       : '';
   return (
+    (multi ? `title ${report.title}: ` : '') +
     `synced ${report.sections} sections + ${report.appendices} appendices ` +
     `(issue date ${report.issueDate}; ${changes}${images}; ${report.durationMs} ms; ` +
-    `corpus hash ${report.corpusHash})\n`
+    `corpus hash ${report.corpusHash})`
   );
 }
 
@@ -948,14 +1020,18 @@ export async function main(argv: readonly string[], io: MainIO): Promise<number>
       return 0;
     }
 
-    if (runVibeCoderCommand(parsed, io)) return 0;
+    if (runStandaloneCommand(parsed, io)) return 0;
 
     const config = loadConfig(io.env);
     logger ??= createLogger(config.logLevel);
 
     if (command === 'sync') {
-      const report = await runSyncCommand(config, logger);
-      io.out(formatSyncSummary(report));
+      const reports = await runSyncCommand(config, logger);
+      // Multi-title syncs prefix each line with the title it describes; a
+      // single-title sync prints exactly the line it always has.
+      const multi = reports.length > 1;
+      const lines = reports.map((report) => formatSyncSummary(report, multi));
+      io.out(`${lines.join('\n')}\n`);
       return 0;
     }
     if (command === 'export') {

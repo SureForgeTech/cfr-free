@@ -45,7 +45,7 @@ export interface VerifyReport {
   readonly issueDate: string | null;
   /** Whether the recorded receipt still describes the current rows. */
   readonly receipt: CorpusReceiptStatus;
-  /** The recorded `meta.corpus_hash`, or null when the file records none. */
+  /** The Title 38 corpus receipt, with the legacy `corpus_hash` as fallback. */
   readonly recordedCorpusHash: string | null;
   /** The receipt recomputed from the store's current Title 38 rows. */
   readonly recomputedCorpusHash: string;
@@ -114,7 +114,8 @@ export function runVerifyCommand(
         store.getMeta(`title.${DEFAULT_TITLE}.issue_date`) ?? store.getMeta('issue_date');
       // The receipt recomputed from the rows the file holds right now.
       const recomputedCorpusHash = corpusHash(store.snapshotTextHashes(DEFAULT_TITLE));
-      const recordedCorpusHash = store.getMeta('corpus_hash');
+      const recordedCorpusHash =
+        store.getMeta(`title.${DEFAULT_TITLE}.corpus_hash`) ?? store.getMeta('corpus_hash');
       const receipt: CorpusReceiptStatus =
         recordedCorpusHash === null
           ? 'absent'

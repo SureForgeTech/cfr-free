@@ -73,9 +73,10 @@ describe('verify argument parsing', () => {
 });
 
 describe('runVerifyCommand', () => {
-  it('verifies a usable index: schema, counts, issue date and a matching receipt', () => {
+  it('verifies schema, counts, issue date and falls back to the legacy receipt', () => {
     const temp = openReceiptedStore();
     try {
+      expect(temp.store.getMeta('title.38.corpus_hash')).toBeNull();
       const config = loadConfig({ CFR_INDEX_PATH: temp.indexPath });
       const report = runVerifyCommand(config, createTestLogger());
       expect(report).toMatchObject({
@@ -91,6 +92,20 @@ describe('runVerifyCommand', () => {
       expect(output).toContain('3 sections + 1 appendices');
       expect(output).toContain('issue date: 2026-10-09');
       expect(output).toContain('corpus receipt: match');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('prefers the Title 38 receipt when the legacy receipt disagrees', () => {
+    const temp = openTempStore();
+    try {
+      const hash = corpusHash(temp.store.snapshotTextHashes(38));
+      temp.store.setMeta('title.38.corpus_hash', hash);
+      temp.store.setMeta('corpus_hash', '0'.repeat(64));
+      const config = loadConfig({ CFR_INDEX_PATH: temp.indexPath });
+      const report = runVerifyCommand(config, createTestLogger());
+      expect(report).toMatchObject({ receipt: 'match', recordedCorpusHash: hash });
     } finally {
       temp.cleanup();
     }

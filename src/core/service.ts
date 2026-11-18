@@ -23,7 +23,7 @@ import {
   type QueryTerm,
   visibleMatches,
 } from './query.js';
-import { Store, type SearchHit } from './store.js';
+import { DEFAULT_TITLE, Store, type SearchHit } from './store.js';
 
 /**
  * Application facade shared by the MCP server and the HTTP API. All input
@@ -196,6 +196,18 @@ export interface SectionDetail {
    * Sorted lexicographically; empty array when nothing cites it.
    */
   readonly citedBy: ReadonlyArray<string>;
+  /**
+   * Structural Citation Support (SCS) diagnostics — the query-independent
+   * vector (G, P, I) from docs/research/ranking-instrument-design-2026-11-01.md
+   * §3.1: distinct citing sections overall (`total`), restricted to the same
+   * part (`part`), and further to the same subject group (`subjectGroup`).
+   * Diagnostic output only: search ranking and candidate sets never read it.
+   */
+  readonly citationSupport: {
+    readonly subjectGroup: number;
+    readonly part: number;
+    readonly total: number;
+  };
   /** True when the local index backing this read is older than CFR_MAX_AGE_DAYS. */
   readonly indexStale: boolean;
   /** Warning to surface when the index is stale; null otherwise. */
@@ -615,6 +627,9 @@ export class CFRService {
       // Reverse edges keyed by the section's canonical (lowercase) citation —
       // the exact form extractReferences() stored at rebuild time.
       citedBy: this.store.citedBy(row.citation),
+      // SCS diagnostics (design doc §3.1): same edge scope as citedBy — the
+      // cited section's canonical (lowercase) citation, Title 38 default.
+      citationSupport: this.store.citationSupport(row.citation),
       indexStale: status.stale,
       notice: noticeFor(status),
     };
@@ -645,11 +660,18 @@ export class CFRService {
     return browseStructure(structure, parsed.data);
   }
 
-  /** Freshness report for the local index. */
+  /**
+   * Freshness report for the local index.
+   *
+   * Every number here describes the SERVING title (Title 38): the issue
+   * date, the row counts and the structure-drift check are that title's
+   * own. A multi-title store holds other authorities' rows too, and
+   * counting them here would report a healthy index as drifted.
+   */
   status(): IndexStatus {
     const issueDate = this.store.getMeta('issue_date');
     const syncedAt = this.store.getMeta('synced_at');
-    const sections = this.store.countSections();
+    const sections = this.store.countSections(DEFAULT_TITLE);
     const appendices = Number(this.store.getMeta('appendices_count') ?? '0');
     let stale = true;
     if (syncedAt !== null) {
