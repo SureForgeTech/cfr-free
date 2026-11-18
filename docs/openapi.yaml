@@ -921,6 +921,7 @@ components:
         - sourceUrlAtIndexDate
         - references
         - citedBy
+        - citationSupport
         - indexStale
         - notice
       properties:
@@ -959,6 +960,25 @@ components:
           type: array
           items: { type: string }
           description: 'Citations of indexed sections whose text references this one (reverse cross-references), sorted.'
+        citationSupport:
+          type: object
+          required: [subjectGroup, part, total]
+          additionalProperties: false
+          properties:
+            subjectGroup: { type: number }
+            part: { type: number }
+            total: { type: number }
+          description: >-
+            Structural Citation Support diagnostics (populated by
+            src/core/service.ts#getSection): distinct citing sections
+            overall (`total`), restricted to citing sections sharing this
+            section's part (`part`), and further to those sharing its part
+            AND subject group (`subjectGroup`). Self-citations are excluded
+            and repeated references from one citing section count once; a
+            citing section with missing/empty part or subject_group counts
+            toward `total` only — missing metadata never wildcard-matches.
+            Diagnostic output only: the quantity is query-independent and
+            never affects search ranking or candidate sets.
         indexStale: { type: boolean }
         notice: { type: [string, 'null'] }
       additionalProperties: false

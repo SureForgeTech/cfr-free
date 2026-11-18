@@ -589,6 +589,268 @@ describe('Store section backlinks', () => {
   });
 });
 
+describe('Store citationSupport (Structural Citation Support, design doc §3.1)', () => {
+  // Target 4.105: part 4, subject group "grp-a".
+  // 4.106 same part, same group; 4.107 same part, other group; 4.108 other
+  // part; 4.109 same part/group but NO part metadata; 4.110 same part/group
+  // with EMPTY part metadata; 4.111 cites 4.105 twice in one text.
+  const seedSupport = () =>
+    openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.105',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Basic entitlement criteria apply.',
+        }),
+        makeSection({
+          citation: '4.106',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 for basic entitlement.',
+        }),
+        makeSection({
+          citation: '4.107',
+          part: '4',
+          subjectGroup: 'grp-b',
+          text: 'See § 4.105 for the shared rule.',
+        }),
+        makeSection({
+          citation: '4.108',
+          part: '17',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 across parts.',
+        }),
+        makeSection({
+          citation: '4.109',
+          part: null,
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 with no part metadata.',
+        }),
+        makeSection({
+          citation: '4.110',
+          part: '',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 with an empty part.',
+        }),
+        makeSection({
+          citation: '4.111',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 here and again § 4.105 later.',
+        }),
+      ],
+    });
+
+  it('computes (G, P, I): same group, same part, other part, missing/empty metadata', () => {
+    const temp = seedSupport();
+    try {
+      // I = 6 distinct citing sections (4.106–4.111, self excluded anyway).
+      // P = 4.106, 4.107, 4.111 — same non-empty part as 4.105; 4.109/4.110
+      // carry null/empty part and contribute to I only.
+      // G = 4.106, 4.111 — same part AND subject group.
+      expect(temp.store.citationSupport('4.105')).toEqual({
+        subjectGroup: 2,
+        part: 3,
+        total: 6,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('counts a citing section that cites twice once (distinct citing IDs)', () => {
+    const temp = seedSupport();
+    try {
+      // 4.111 mentions § 4.105 twice; the edge PRIMARY KEY collapses the
+      // repeats, and count(DISTINCT citing_id) can never double-count.
+      const support = temp.store.citationSupport('4.105');
+      expect(support.subjectGroup).toBe(2); // 4.106 + 4.111, not 3
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('excludes self-citations from every component', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.105',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Defines itself and see § 4.105 for the self-reference.',
+        }),
+        makeSection({
+          citation: '4.106',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105.',
+        }),
+      ],
+    });
+    try {
+      expect(temp.store.citationSupport('4.105')).toEqual({
+        subjectGroup: 1,
+        part: 1,
+        total: 1,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('never wildcard-matches a target with missing part/subject_group', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.105',
+          part: null,
+          subjectGroup: null,
+          text: 'No hierarchy metadata at all.',
+        }),
+        makeSection({
+          citation: '4.106',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105.',
+        }),
+      ],
+    });
+    try {
+      // The target's null part means no citing section can share it: the
+      // citing section counts toward I only, never P or G.
+      expect(temp.store.citationSupport('4.105')).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 1,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('reports zeros for an uncited section (the appendix zero case)', () => {
+    const temp = seedSupport();
+    try {
+      expect(temp.store.citationSupport('4.106')).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 0,
+      });
+      // An appendix is a real zero, not an absent answer: extractReferences()
+      // only emits section-shaped citations, so no edge ever targets an
+      // appendix and its inbound support is genuinely zero.
+      expect(temp.store.citationSupport('Appendix A to Part 4')).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 0,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('counts an edge whose cited citation is absent from the index in total only', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.106',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.999 which is not indexed here.',
+        }),
+      ],
+    });
+    try {
+      expect(temp.store.citationSupport('4.999')).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 1,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("scopes the vector to one authority's edges — titles never blend", () => {
+    // A Title 32 section citing "§ 4.105" means Title 32's § 4.105 (the
+    // edge rule: edges never cross titles), so each authority carries its
+    // own § 4.105 and its own citing section.
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.105',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Basic entitlement criteria apply.',
+        }),
+        makeSection({
+          citation: '4.106',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 for the criteria.',
+        }),
+        makeSection({
+          citation: '4.105',
+          title: 32,
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'The Title 32 counterpart.',
+        }),
+        makeSection({
+          citation: '70.1',
+          title: 32,
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 from another title.',
+        }),
+      ],
+    });
+    try {
+      // Title 38's § 4.105: cited by 4.106 only.
+      expect(temp.store.citationSupport('4.105')).toEqual({
+        subjectGroup: 1,
+        part: 1,
+        total: 1,
+      });
+      // Title 32's § 4.105: cited by 70.1 only. A lookup that blended the
+      // authorities would report total 2 (4.106 + 70.1).
+      expect(temp.store.citationSupport('4.105', 32)).toEqual({
+        subjectGroup: 1,
+        part: 1,
+        total: 1,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('counts an edge toward a title that has no such provision in total only', () => {
+    // The scoped authority has no § 4.105 of its own, so the cited
+    // section's part/subject_group are unknown — never a wildcard match.
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '70.1',
+          title: 32,
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.105 from another title.',
+        }),
+      ],
+    });
+    try {
+      expect(temp.store.citationSupport('4.105', 32)).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 1,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+});
+
 describe('Store multi-title (schema v3)', () => {
   it('stores the same citation in two titles under the (title, citation) key', () => {
     const temp = openTempStore({

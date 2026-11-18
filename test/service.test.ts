@@ -995,6 +995,55 @@ describe('CFRService.getSection citedBy', () => {
   });
 });
 
+describe('CFRService.getSection citationSupport', () => {
+  it('populates the (G, P, I) diagnostic vector from the materialized edges', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.130',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Evaluation rules for mental disorder claims.',
+        }),
+        makeSection({
+          citation: '4.131',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.130 for the evaluation procedure.',
+        }),
+        makeSection({
+          citation: '4.132',
+          part: '4',
+          subjectGroup: 'grp-b',
+          text: 'See § 4.130 across subject groups.',
+        }),
+        makeSection({
+          citation: '17.15',
+          part: '17',
+          subjectGroup: null,
+          text: 'See § 4.130 from another part.',
+        }),
+      ],
+    });
+    try {
+      const section = new CFRService(temp.store, 7).getSection('4.130');
+      expect(section.citationSupport).toEqual({ subjectGroup: 1, part: 2, total: 3 });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('reports zeros when nothing cites the section', () => {
+    withService((service) => {
+      expect(service.getSection('4.125').citationSupport).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 0,
+      });
+    });
+  });
+});
+
 describe('CFRService.health', () => {
   it('reports ready on a fresh seeded index', () => {
     withService((service) => {
