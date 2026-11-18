@@ -48,11 +48,18 @@ describe('HTTP access control and peer budgets', () => {
     };
   }
 
-  it('refuses cross-site requests unconditionally, even on remote binds', () => {
-    const request = requestHandler({ localOnly: false });
-    expect(request('127.0.0.1', { host: 'cfr.example.org', 'sec-fetch-site': 'cross-site' })).toBe(
+  it.each([
+    ['loopback', { localOnly: true }, 'localhost', 403],
+    [
+      'remote with allowed hosts',
+      { localOnly: true, allowedHosts: ['cfr.example.org'] },
+      'cfr.example.org',
       403,
-    );
+    ],
+    ['unguarded remote', { localOnly: false }, 'cfr.example.org', 200],
+  ] as const)('applies the cross-site check on a %s bind', (_bind, options, host, status) => {
+    const request = requestHandler(options);
+    expect(request('127.0.0.1', { host, 'sec-fetch-site': 'cross-site' })).toBe(status);
   });
 
   it('resolves X-Forwarded-For only when the direct peer is a trusted proxy', () => {

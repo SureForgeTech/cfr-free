@@ -43,7 +43,8 @@ export function canonicalIp(address: string): string | null {
   const zoneStart = trimmed.indexOf('%');
   const ip = zoneStart === -1 ? trimmed : trimmed.slice(0, zoneStart);
   const canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
-  if (canonical.startsWith('::ffff:')) {
+  // The mapped prefix must be followed by exactly two hextets.
+  if (/^::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(canonical)) {
     // Each mapped hextet is variable-width after URL normalization.
     const [high = '', low = ''] = canonical.slice(7).split(':');
     const upper = Number.parseInt(high, 16);

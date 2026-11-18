@@ -902,10 +902,10 @@ function hostNameOf(header: string | undefined): string | null {
 }
 
 /**
- * Host name verification for a loopback bind. Returns true when it
+ * Browser request checks for a guarded bind. Returns true when it
  * answered (refused) the request.
  */
-function refuseNonLocalHost(
+function refuseNonLocalRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   extraHosts: ReadonlySet<string>,
@@ -919,6 +919,15 @@ function refuseNonLocalHost(
       res,
       421,
       errorBody('misdirected_request', 'this server answers to loopback host names only'),
+    );
+    return true;
+  }
+  if (req.headers['sec-fetch-site'] === 'cross-site') {
+    sendJson(
+      req,
+      res,
+      403,
+      errorBody('forbidden', 'cross-site requests to this server are refused'),
     );
     return true;
   }
@@ -1002,16 +1011,7 @@ function precheck(
   extraHosts: ReadonlySet<string>,
   trustedProxies: ReadonlySet<string>,
 ): URL | null {
-  if (req.headers['sec-fetch-site'] === 'cross-site') {
-    sendJson(
-      req,
-      res,
-      403,
-      errorBody('forbidden', 'cross-site requests to this server are refused'),
-    );
-    return null;
-  }
-  if (localOnly && refuseNonLocalHost(req, res, extraHosts)) return null;
+  if (localOnly && refuseNonLocalRequest(req, res, extraHosts)) return null;
   const methodRefused = req.method !== 'GET' && req.method !== 'HEAD';
   const urlTooLong = Buffer.byteLength(req.url ?? '/', 'utf8') > MAX_URL_BYTES;
   // The URL is parsed before the limiter, because the cost of a request

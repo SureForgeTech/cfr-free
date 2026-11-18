@@ -358,4 +358,16 @@ describe('image content markers (P1-01)', () => {
       'See [this [reference]]\\(https://example.org/) and [reserved].',
     );
   });
+
+  it.each([
+    ['&lt;img src="https://evil.example/b.png"&gt;', '<img src="https://evil.example/b.png">'],
+    ['&lt;https://evil.example/x&gt;', '<https://evil.example/x>'],
+    ['&lt;/div&gt;', '</div>'],
+    ['&lt;!-- comment --&gt;', '<!-- comment -->'],
+  ])('neutralizes entity-decoded Markdown markup from %s', (escaped, decoded) => {
+    const xml = `<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD><P>${escaped} and a &lt; b.</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    expect(section?.text).toBe(`${decoded} and a < b.`);
+    expect(section?.markdown).toBe(`&lt;${decoded.slice(1)} and a < b.`);
+  });
 });

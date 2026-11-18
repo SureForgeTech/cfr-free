@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizePeerAddress, RateLimiter } from '../../src/titan/rate-limit.js';
+import { canonicalIp, normalizePeerAddress, RateLimiter } from '../../src/titan/rate-limit.js';
 
 /** Test-only view of the private cap and bucket map (`private readonly` erases at runtime). */
 interface PruneInternals {
@@ -152,6 +152,17 @@ describe('RateLimiter.prune', () => {
     }
     expect(internals(limiter).buckets.size).toBe(18);
     expect([...internals(limiter).buckets.keys()][0]).toBe('peer-3');
+  });
+});
+
+describe('canonicalIp', () => {
+  it.each([
+    ['::ffff:1', '::ffff:1'],
+    ['::ffff:1:2:3', '::ffff:1:2:3'],
+    ['::ffff:0:1.2.3.4', '::ffff:0:102:304'],
+    ['0:0:0:0:0:FFFF:192.0.2.1', '192.0.2.1'],
+  ])('canonicalizes %s as %s', (address, expected) => {
+    expect(canonicalIp(address)).toBe(expected);
   });
 });
 

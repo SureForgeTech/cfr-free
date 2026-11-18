@@ -143,14 +143,23 @@ describe('diffIssues', () => {
       // network round-trip.
       ['2026-13-01', TO_DATE],
       ['2026-02-30', TO_DATE],
-      // Future dates must fail synchronously before any network round-trip.
-      ['2099-01-01', TO_DATE],
-      [FROM_DATE, '2099-12-31'],
     ] as const) {
       const error = await rejection(diffIssues(deps, from, to));
       expect(error).toBeInstanceOf(ServiceError);
       expect((error as ServiceError).code).toBe('invalid_input');
     }
+    expect(requested).toEqual([]);
+  });
+
+  it.each([
+    ['2099-01-01', TO_DATE],
+    [FROM_DATE, '2099-12-31'],
+  ])('explains the UTC cutoff for future dates (%s to %s)', async (from, to) => {
+    const requested: string[] = [];
+    const deps = makeDeps(makeDiffFetch(requested));
+    const error = await rejection(diffIssues(deps, from, to));
+    expect(error).toBeInstanceOf(ServiceError);
+    expect(error).toMatchObject({ code: 'invalid_input', message: expect.stringContaining('UTC') });
     expect(requested).toEqual([]);
   });
 
