@@ -51,17 +51,16 @@ export interface VerifyReport {
   readonly recomputedCorpusHash: string;
 }
 
-/** A missing/unreadable/non-index input is the reader's mistake, not a finding. */
-function refuse(resolved: string, detail: string): ServiceError {
-  return new ServiceError(`${detail} — ${resolved}`, 'invalid_input');
-}
-
 /**
- * The store's own `cannot open index at <path>: ` prefix, removed: the
- * refusal names the path itself, so the message would carry it twice.
+ * A missing/unreadable/non-index input is the reader's mistake, not a finding.
+ *
+ * The message is FIXED guidance: the resolved path and the underlying
+ * store/SQLite detail go to the structured log, not to the reader's line.
+ * A verification runs on evidence the reader may share, and the guidance
+ * they need is what to do next — not the server's directory layout.
  */
-function withoutStorePrefix(detail: string, resolved: string): string {
-  return detail.replace(`cannot open index at ${resolved}: `, '');
+function refuse(detail: string): ServiceError {
+  return new ServiceError(detail, 'invalid_input');
 }
 
 /**
@@ -78,8 +77,8 @@ export function runVerifyCommand(
 ): VerifyReport {
   const resolved = snapshot === undefined ? config.indexPath : path.resolve(snapshot);
   if (!existsSync(resolved)) {
+    logger.warn('verification found no file', { path: resolved });
     throw refuse(
-      resolved,
       'no index or snapshot here — run `cfr-free sync` first, or store a snapshot with `cfr-free export <path>`',
     );
   }
@@ -91,45 +90,69 @@ export function runVerifyCommand(
     store = Store.open(resolved, { readOnly: true });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    logger.warn('verification refused the file', { path: resolved, detail });
     throw refuse(
-      resolved,
-      `cannot open as a cfr-free index: ${withoutStorePrefix(detail, resolved)}`,
+      'cannot open as a cfr-free index — the file is missing, unreadable, or not a cfr-free index',
     );
   }
   try {
-    // The open itself ran PRAGMA quick_check (see Store.open), so reaching
-    // here means the schema and the page structure are intact.
-    const { sections, appendices } = store.countProvisions(DEFAULT_TITLE);
-    // Per-title key first (multi-title indexes), the legacy key as fallback
-    // for indexes built before it existed — the same resolution the offline
-    // snapshot comparison uses.
-    const issueDate =
-      store.getMeta(`title.${DEFAULT_TITLE}.issue_date`) ?? store.getMeta('issue_date');
-    // The receipt recomputed from the rows the file holds right now.
-    const recomputedCorpusHash = corpusHash(store.snapshotTextHashes(DEFAULT_TITLE));
-    const recordedCorpusHash = store.getMeta('corpus_hash');
-    const receipt: CorpusReceiptStatus =
-      recordedCorpusHash === null
-        ? 'absent'
-        : recordedCorpusHash === recomputedCorpusHash
-          ? 'match'
-          : 'mismatch';
+    // ONE read snapshot for the whole verification: the counts, the
+    // metadata and the row hashes must all describe the SAME revision.
+    // Without it a sync committing between two statements could make a
+    // valid index report a receipt mismatch — or make a corrupt one look
+    // fine. A deferred transaction pins one revision without blocking the
+    // writer (WAL).
+    const report = store.readSnapshot(() => {
+      // The open itself ran PRAGMA quick_check (see Store.open) and
+      // checked the schema objects, so reaching here means the file is a
+      // structurally sound cfr-free index.
+      const { sections, appendices } = store.countProvisions(DEFAULT_TITLE);
+      // Per-title key first (multi-title indexes), the legacy key as fallback
+      // for indexes built before it existed — the same resolution the offline
+      // snapshot comparison uses.
+      const issueDate =
+        store.getMeta(`title.${DEFAULT_TITLE}.issue_date`) ?? store.getMeta('issue_date');
+      // The receipt recomputed from the rows the file holds right now.
+      const recomputedCorpusHash = corpusHash(store.snapshotTextHashes(DEFAULT_TITLE));
+      const recordedCorpusHash = store.getMeta('corpus_hash');
+      const receipt: CorpusReceiptStatus =
+        recordedCorpusHash === null
+          ? 'absent'
+          : recordedCorpusHash === recomputedCorpusHash
+            ? 'match'
+            : 'mismatch';
+      return {
+        sections,
+        appendices,
+        issueDate,
+        receipt,
+        recordedCorpusHash,
+        recomputedCorpusHash,
+      };
+    });
     logger.info('index verified', {
       path: resolved,
-      sections,
-      appendices,
-      issueDate,
-      receipt,
+      sections: report.sections,
+      appendices: report.appendices,
+      issueDate: report.issueDate,
+      receipt: report.receipt,
     });
     return {
       path: resolved,
-      sections,
-      appendices,
-      issueDate,
-      receipt,
-      recordedCorpusHash,
-      recomputedCorpusHash,
+      sections: report.sections,
+      appendices: report.appendices,
+      issueDate: report.issueDate,
+      receipt: report.receipt,
+      recordedCorpusHash: report.recordedCorpusHash,
+      recomputedCorpusHash: report.recomputedCorpusHash,
     };
+  } catch (error) {
+    // A failure INSIDE the read (a missing table, a corrupt row) is the
+    // reader's input, not a service fault: it exits 2 with actionable
+    // guidance rather than a generic error.
+    const detail = error instanceof Error ? error.message : String(error);
+    logger.warn('verification could not read the file', { path: resolved, detail });
+    throw refuse('cannot read the file as a cfr-free index');
   } finally {
     store.close();
   }

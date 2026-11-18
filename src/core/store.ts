@@ -368,6 +368,72 @@ function ensureReadOnlySchemaVersion(db: DatabaseSync): void {
 }
 
 /**
+ * The objects a usable cfr-free index MUST have: the row table, the
+ * metadata table, the edge table and the FTS index.
+ *
+ * `refuseForeignDatabase` only asks "are the tables ours?" and the version
+ * check only asks "is the version current?"; neither asks whether the
+ * objects the READ paths need actually EXIST. A file stamped with the
+ * current version but missing its FTS index would open, answer `quick_check`
+ * and then fail on the first search — so verification, which exists to
+ * answer "is this file usable?", checks the objects themselves.
+ */
+const REQUIRED_TABLES = ['meta', 'sections', 'section_references', 'sections_fts'] as const;
+
+/** The columns of `sections` a read path selects. */
+const REQUIRED_SECTION_COLUMNS = [
+  'id',
+  'title',
+  'citation',
+  'kind',
+  'heading',
+  'chapter',
+  'subchapter',
+  'part',
+  'subpart',
+  'subject_group',
+  'path',
+  'text',
+  'markdown',
+  'issue_date',
+] as const;
+
+/**
+ * Confirm the file holds the objects a cfr-free index is made of.
+ *
+ * Runs against a read-only connection and writes nothing: it only reads
+ * `sqlite_master` and `pragma_table_info`.
+ */
+function assertUsableSchema(db: DatabaseSync): void {
+  const tables = new Set(
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+      .all()
+      .map((row) => String((row as Record<string, unknown>)['name'])),
+  );
+  const missing = REQUIRED_TABLES.filter((name) => !tables.has(name));
+  if (missing.length > 0) {
+    throw new StoreError(
+      `the file is missing the ${missing.join(', ')} ${missing.length === 1 ? 'object' : 'objects'} ` +
+        'a cfr-free index needs — it is not a usable cfr-free index',
+    );
+  }
+  const columns = new Set(
+    db
+      .prepare("SELECT name FROM pragma_table_info('sections')")
+      .all()
+      .map((row) => String((row as Record<string, unknown>)['name'])),
+  );
+  const absent = REQUIRED_SECTION_COLUMNS.filter((name) => !columns.has(name));
+  if (absent.length > 0) {
+    throw new StoreError(
+      `the sections table is missing the ${absent.join(', ')} ` +
+        `${absent.length === 1 ? 'column' : 'columns'} a cfr-free index needs`,
+    );
+  }
+}
+
+/**
  * Ensure the on-disk schema version is compatible; adopt legacy files.
  *
  * Adoption rules: version 0 (pre-versioning) always adopts; an OLDER
@@ -624,6 +690,9 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     assertQuickCheck(db);
     if (readOnly) {
       ensureReadOnlySchemaVersion(db);
+      // A read-only evidence open must also hold the OBJECTS a read path
+      // needs: the version stamp alone does not prove the file is usable.
+      assertUsableSchema(db);
     } else {
       db.exec(SCHEMA_SQL);
       ensureSchemaVersion(db, options.allowSchemaUpgrade ?? false);
@@ -679,6 +748,44 @@ export class Store {
       this.statements.set(sql, prepared);
     }
     return prepared;
+  }
+
+  /**
+   * Run `fn` inside a single DEFERRED transaction — a READ snapshot.
+   *
+   * A deferred transaction takes no lock until it reads, and then holds a
+   * consistent view of the database for its whole life: every statement
+   * inside sees the SAME revision, even if a writer commits in between.
+   * Under WAL a reader never blocks a writer, so a verification can read a
+   * live index without stopping a sync.
+   *
+   * This is what makes a multi-statement read coherent: the counts, the
+   * metadata and the row hashes a verification compares all describe one
+   * revision, instead of a mix of two.
+   */
+  readSnapshot<T>(fn: () => T): T {
+    try {
+      this.db.exec('BEGIN DEFERRED');
+    } catch (error) {
+      if (isBusyError(error)) {
+        throw new StoreError(
+          'index is locked by another cfr-free process (a sync appears to be running) — wait for it to finish and retry',
+        );
+      }
+      throw error;
+    }
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Rollback is best-effort: the connection may already be clean.
+      }
+      throw error;
+    }
   }
 
   /** Run `fn` inside a single IMMEDIATE transaction (rollback on throw). */

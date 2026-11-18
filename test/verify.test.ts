@@ -223,8 +223,74 @@ describe('runVerifyCommand', () => {
       );
       expect(positional.code).toBe('invalid_input');
       expect(positional.message).toMatch(/cannot open as a cfr-free index/);
-      // The refusal names the path once, not twice.
+      // The refusal carries no path and no raw store/SQLite detail: the
+      // reader's line says what to do, and the detail goes to the log.
       expect(positional.message).not.toMatch(/cannot open index at/);
+      expect(positional.message).not.toContain(dir);
+      expect(positional.message).not.toMatch(/SQLITE|database disk/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads ONE revision: a commit during a read cannot produce a false mismatch', () => {
+    // The concurrency hazard the read snapshot closes: a sync that commits
+    // BETWEEN the verification's hash read and its receipt read would
+    // otherwise report a valid index as mismatched. The snapshot pins the
+    // revision at its first read, so a commit in between is invisible to
+    // the rest of the verification.
+    const temp = openTempStore();
+    try {
+      const before = corpusHash(temp.store.snapshotTextHashes(38));
+      temp.store.setMeta('corpus_hash', before);
+
+      // A second connection commits a DIFFERENT receipt while the
+      // verification is reading — the rows are unchanged, so the recorded
+      // receipt no longer describes them.
+      const writer = new DatabaseSync(temp.indexPath);
+      const read = temp.store.readSnapshot(() => {
+        const first = temp.store.getMeta('corpus_hash');
+        writer.exec("UPDATE meta SET value = 'tampered' WHERE key = 'corpus_hash'");
+        const second = temp.store.getMeta('corpus_hash');
+        return { first, second };
+      });
+      writer.close();
+
+      // Both reads inside the snapshot saw the same revision: the commit
+      // that happened in between did not leak into it.
+      expect(read.first).toBe(before);
+      expect(read.second).toBe(before);
+      // Outside the snapshot the new value is visible, so the test really
+      // did commit between the reads.
+      expect(temp.store.getMeta('corpus_hash')).toBe('tampered');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('refuses a file stamped with the current version but missing the objects a read needs', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cfr-verify-'));
+    try {
+      // The version stamp alone does not make a file usable: this one has
+      // the right version but no FTS index, so a search would fail on it.
+      const partial = path.join(dir, 'partial.sqlite');
+      const db = new DatabaseSync(partial);
+      db.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE sections (
+          id INTEGER PRIMARY KEY, title INTEGER NOT NULL DEFAULT 38,
+          citation TEXT NOT NULL, kind TEXT NOT NULL, heading TEXT NOT NULL,
+          chapter TEXT, subchapter TEXT, part TEXT, subpart TEXT,
+          subject_group TEXT, path TEXT NOT NULL, text TEXT NOT NULL,
+          markdown TEXT NOT NULL, issue_date TEXT NOT NULL);
+        CREATE TABLE section_references (
+          citing_id INTEGER NOT NULL, citing_title INTEGER NOT NULL DEFAULT 38,
+          cited_citation TEXT NOT NULL);
+        PRAGMA user_version = 3;`);
+      db.close();
+      const config = loadConfig({ CFR_INDEX_PATH: partial });
+      const error = captureServiceError(() => runVerifyCommand(config, createTestLogger()));
+      expect(error.code).toBe('invalid_input');
+      expect(error.message).toMatch(/cannot open as a cfr-free index/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
