@@ -45,7 +45,8 @@ keys, no telemetry — one Node process and one SQLite file.
   snapshot of the index you can copy anywhere (sqlite default; `jsonl` and `md`
   for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
   SQLite snapshots offline — added, removed and changed provisions with dated
-  source links and bounded text-change hunks.
+  source links and bounded text-change hunks (`cfr-free compare <from> <to>`
+  or the `compare_snapshots` MCP tool).
 
 ## Requirements
 
@@ -186,6 +187,8 @@ node dist/cli.js export ./backup.sqlite   # consistent snapshot of the local ind
 node dist/cli.js search PTSD               # ranked provisions from the local index
 
 node dist/cli.js diff 2026-01-01 2026-06-01   # provision changes between two issue dates
+node dist/cli.js export /tmp/old.sqlite       # store a snapshot before refreshing
+node dist/cli.js compare /tmp/old.sqlite ./backup.sqlite  # offline snapshot comparison
 node dist/cli.js redline 2026-01-01 2026-06-01 4.125   # line-level redline of one provision
 ```
 

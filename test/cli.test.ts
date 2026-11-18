@@ -13,6 +13,7 @@ import {
   USAGE,
 } from '../src/cli.js';
 import { HttpError } from '../src/core/http-client.js';
+import { formatSnapshotComparison } from '../src/commands/compare.js';
 import { formatIssueDiff } from '../src/commands/diff.js';
 import { POINT_IN_TIME_NOTICE } from '../src/core/point-in-time.js';
 import { formatSearchResults } from '../src/commands/search.js';
@@ -22,7 +23,7 @@ import { EXIT } from '../src/exit-codes.js';
 import type { FetchLike } from '../src/core/http-client.js';
 import { VERSION } from '../src/version.js';
 import type { Logger } from '../src/logger.js';
-import { createTestLogger, FIXTURE_STRUCTURE, openTempStore } from './helpers.js';
+import { createTestLogger, FIXTURE_STRUCTURE, makeSection, openTempStore } from './helpers.js';
 
 function makeIo(
   env: NodeJS.ProcessEnv = {},
@@ -175,6 +176,34 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['diff', '--flag'])).toThrow(CliError);
     expect(() => parseArgs(['diff', '2026-01-01', '-v'])).toThrow(CliError);
   });
+
+  it('parses compare with two snapshot paths and an optional part', () => {
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+    });
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite', '--part', '4'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+      part: '4',
+    });
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite', '--part=17'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+      part: '17',
+    });
+  });
+
+  it('rejects compare without two snapshots, with extra args, or with unknown options', () => {
+    expect(() => parseArgs(['compare'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'old.sqlite'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'a', 'b', 'c'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--json'])).toThrow(/unknown option for compare/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--part'])).toThrow(/--part requires/);
+  });
 });
 
 describe('main', () => {
@@ -184,6 +213,7 @@ describe('main', () => {
     expect(code).toBe(0);
     expect(out.join('')).toContain('Usage:');
     expect(out.join('')).toContain('cfr-free diff <from> [to]');
+    expect(out.join('')).toContain('cfr-free compare <from_snapshot> <to_snapshot>');
     expect(out.join('')).toContain('cfr-free export <path> [jsonl|md]');
     expect(err.join('')).toBe('');
   });
@@ -262,6 +292,211 @@ describe('main', () => {
     expect(global).toContain('cfr-free diff <from> [to]');
     // The entry's continuation line belongs to the entry.
     expect(global).toContain("(to defaults to the index's issue date)");
+    expect(commandUsage('compare')).toContain('cfr-free compare <from_snapshot> <to_snapshot>');
+  });
+
+  it('compares two stored snapshots offline through the CLI', async () => {
+    const fromTemp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.1',
+          heading: 'Evaluation criteria.',
+          text: 'Shared line.\nOld criteria.',
+        }),
+        makeSection({ citation: '4.2', heading: 'Removed section.', text: 'Removed body.' }),
+      ],
+      issueDate: '2026-01-01',
+    });
+    const toTemp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.1',
+          heading: 'Evaluation criteria.',
+          text: 'Shared line.\nNew criteria.',
+        }),
+        makeSection({ citation: '4.4', heading: 'Added section.', text: 'Added body.' }),
+      ],
+      issueDate: '2026-02-01',
+    });
+    const fromPath = path.join(fromTemp.dir, 'from.sqlite');
+    const toPath = path.join(toTemp.dir, 'to.sqlite');
+    fromTemp.store.backupTo(fromPath);
+    toTemp.store.backupTo(toPath);
+    const { out, err, io } = makeIo({}, createTestLogger());
+    try {
+      const code = await main(['compare', fromPath, toPath], io);
+      expect(code).toBe(0);
+      const printed = out.join('');
+      expect(printed).toContain('1 changed, 1 added, 1 removed between 2026-01-01 and 2026-02-01');
+      expect(printed).toContain('- 4.1 — Evaluation criteria.');
+      expect(printed).toContain('- 4.4 — Added section.');
+      expect(printed).toContain('- 4.2 — Removed section.');
+      expect(printed).toContain(`https://www.ecfr.gov/on/2026-01-01/title-38/section-4.1`);
+      expect(printed).toContain(`https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1`);
+      expect(printed).toContain('- from line 2: Old criteria.');
+      expect(printed).toContain('+ to line 2: New criteria.');
+      expect(err.join('')).toBe('');
+    } finally {
+      fromTemp.cleanup();
+      toTemp.cleanup();
+    }
+  });
+
+  it('applies the CLI compare --part filter', async () => {
+    const fromTemp = openTempStore({
+      sections: [
+        makeSection({ citation: '4.1', text: 'Old part 4.' }),
+        makeSection({
+          citation: '17.1',
+          part: '17',
+          subpart: null,
+          path: '/title:38/chapter:I/part:17',
+          text: 'Old part 17.',
+        }),
+      ],
+      issueDate: '2026-01-01',
+    });
+    const toTemp = openTempStore({
+      sections: [
+        makeSection({ citation: '4.1', text: 'New part 4.' }),
+        makeSection({
+          citation: '17.1',
+          part: '17',
+          subpart: null,
+          path: '/title:38/chapter:I/part:17',
+          text: 'New part 17.',
+        }),
+      ],
+      issueDate: '2026-02-01',
+    });
+    const fromPath = path.join(fromTemp.dir, 'from.sqlite');
+    const toPath = path.join(toTemp.dir, 'to.sqlite');
+    fromTemp.store.backupTo(fromPath);
+    toTemp.store.backupTo(toPath);
+    const { out, io } = makeIo({}, createTestLogger());
+    try {
+      const code = await main(['compare', fromPath, toPath, '--part', '17'], io);
+      expect(code).toBe(0);
+      const printed = out.join('');
+      expect(printed).toContain('part: 17');
+      expect(printed).toContain('- 17.1 —');
+      expect(printed).not.toContain('- 4.1 —');
+    } finally {
+      fromTemp.cleanup();
+      toTemp.cleanup();
+    }
+  });
+
+  it('maps a missing snapshot to exit code 2 with actionable guidance', async () => {
+    const { err, io } = makeIo({ CFR_LOG_LEVEL: 'error' }, createTestLogger());
+    const code = await main(['compare', 'missing.sqlite', 'also-missing.sqlite'], io);
+    expect(code).toBe(2);
+    expect(err.join('')).toContain('no snapshot at ');
+    expect(err.join('')).toContain('cfr-free export');
+  });
+
+  it('formats a snapshot comparison for terminal readers', () => {
+    const comparison = {
+      from: { path: '/snapshots/old.sqlite', issueDate: '2026-01-01' },
+      to: { path: '/snapshots/new.sqlite', issueDate: '2026-02-01' },
+      part: null,
+      added: [],
+      removed: [],
+      changed: [
+        {
+          citation: '4.1',
+          kind: 'section' as const,
+          heading: 'Evaluation criteria.',
+          headingChanged: true,
+          previousHeading: 'Old criteria.',
+          chapter: 'I',
+          part: '4',
+          subpart: 'B',
+          path: '/title:38/chapter:I/part:4/subpart:B',
+          fromIssueDate: '2026-01-01',
+          toIssueDate: '2026-02-01',
+          fromSourceUrl: 'https://www.ecfr.gov/on/2026-01-01/title-38/section-4.1',
+          toSourceUrl: 'https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1',
+          imageContent: false,
+          summary: {
+            truncated: false,
+            hunks: [
+              { fromLine: 1, toLine: null, type: 'del' as const, text: 'Old criteria.' },
+              { fromLine: null, toLine: 1, type: 'add' as const, text: 'New criteria.' },
+            ],
+          },
+        },
+      ],
+      truncated: false,
+    };
+    const printed = formatSnapshotComparison(comparison);
+    expect(printed).toContain('1 changed, 0 added, 0 removed');
+    expect(printed).toContain('previously: Old criteria.');
+    expect(printed).toContain('chapter I / part 4 / subpart B');
+    expect(printed).toContain('- from line 1: Old criteria.');
+    expect(printed).toContain('+ to line 1: New criteria.');
+  });
+
+  it('formats snapshot comparison edge cases for terminal readers', () => {
+    const change = (overrides: Record<string, unknown>) => ({
+      citation: '4.1',
+      kind: 'section' as const,
+      heading: 'Evaluation criteria.',
+      headingChanged: false,
+      previousHeading: null,
+      chapter: null,
+      part: null,
+      subpart: null,
+      path: '/title:38/chapter:I/part:4',
+      fromIssueDate: '2026-01-01',
+      toIssueDate: '2026-02-01',
+      fromSourceUrl: null,
+      toSourceUrl: 'https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1',
+      imageContent: false,
+      summary: { truncated: false, hunks: [] },
+      ...overrides,
+    });
+    const comparison = {
+      from: { path: '/snapshots/old.sqlite', issueDate: '2026-01-01' },
+      to: { path: '/snapshots/new.sqlite', issueDate: '2026-02-01' },
+      part: '4',
+      added: [
+        change({
+          citation: '4.9',
+          imageContent: true,
+          summary: { truncated: true, hunks: [] },
+        }),
+      ],
+      removed: [
+        change({
+          citation: '4.8',
+          toSourceUrl: null,
+          fromSourceUrl: 'https://www.ecfr.gov/on/2026-01-01/title-38/section-4.8',
+          summary: {
+            truncated: false,
+            hunks: [
+              {
+                fromLine: 3,
+                toLine: 3,
+                type: 'same' as const,
+                text: 'line one\nline two',
+              },
+            ],
+          },
+        }),
+      ],
+      changed: [],
+      truncated: true,
+    };
+    const printed = formatSnapshotComparison(comparison);
+    expect(printed).toContain('part: 4');
+    expect(printed).toContain('one or more category lists was cut at the 100-entry cap');
+    expect(printed).toContain('from: (absent)');
+    expect(printed).toContain('image content: true');
+    expect(printed).toContain('summary (truncated):');
+    expect(printed).toContain('(no text lines differ)');
+    expect(printed).toContain('to:   (absent)');
+    expect(printed).toContain('    - from line 3 → to line 3: line one line two');
   });
 
   it('prints the package version', async () => {
