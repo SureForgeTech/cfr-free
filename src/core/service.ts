@@ -196,6 +196,18 @@ export interface SectionDetail {
    * Sorted lexicographically; empty array when nothing cites it.
    */
   readonly citedBy: ReadonlyArray<string>;
+  /**
+   * Structural Citation Support (SCS) diagnostics — the query-independent
+   * vector (G, P, I) from docs/research/ranking-instrument-design-2026-11-01.md
+   * §3.1: distinct citing sections overall (`total`), restricted to the same
+   * part (`part`), and further to the same subject group (`subjectGroup`).
+   * Diagnostic output only: search ranking and candidate sets never read it.
+   */
+  readonly citationSupport: {
+    readonly subjectGroup: number;
+    readonly part: number;
+    readonly total: number;
+  };
   /** True when the local index backing this read is older than CFR_MAX_AGE_DAYS. */
   readonly indexStale: boolean;
   /** Warning to surface when the index is stale; null otherwise. */
@@ -615,6 +627,9 @@ export class CFRService {
       // Reverse edges keyed by the section's canonical (lowercase) citation —
       // the exact form extractReferences() stored at rebuild time.
       citedBy: this.store.citedBy(row.citation),
+      // SCS diagnostics (design doc §3.1): same edge scope as citedBy — the
+      // cited section's canonical (lowercase) citation, Title 38 default.
+      citationSupport: this.store.citationSupport(row.citation),
       indexStale: status.stale,
       notice: noticeFor(status),
     };

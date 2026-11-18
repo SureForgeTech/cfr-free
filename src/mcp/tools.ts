@@ -114,6 +114,18 @@ const sectionOutputSchema = z.object({
   sourceUrlAtIndexDate: z.string(),
   references: z.array(z.object({ citation: z.string(), available: z.boolean() })),
   citedBy: z.array(z.string()),
+  citationSupport: z
+    .object({
+      subjectGroup: z
+        .number()
+        .describe('distinct citing sections in the same part and subject group'),
+      part: z.number().describe('distinct citing sections in the same part'),
+      total: z.number().describe('distinct citing sections overall (self-citations excluded)'),
+    })
+    .describe(
+      'Structural Citation Support diagnostics — distinct citing sections, narrowed by shared structure. ' +
+        'Diagnostic output only: never a search-ranking input and never a candidate-set filter.',
+    ),
   indexStale: z.boolean(),
   notice: z.string().nullable(),
   truncated: z
@@ -446,6 +458,9 @@ export function registerTools(
         'Fetch the full text of one Title 38 CFR section or appendix as markdown. Accepts flexible citations: ' +
         '"4.125", "§ 4.125", "38 CFR 4.125", or appendix names like "Appendix A to Part 4". ' +
         'Returns heading, hierarchy path, issue date and an ecfr.gov permalink. ' +
+        `Also returns \`citationSupport\` — Structural Citation Support diagnostics: how many distinct ` +
+        'indexed sections cite this one, overall and narrowed to the same part and subject group. ' +
+        'That vector is diagnostic output only — it never affects search ranking or candidate sets. ' +
         `The body is capped at ${PROVISION_TEXT_CAP} characters; a body that was cut sets \`truncated: true\`, ` +
         'and the truncated text is incomplete — read the rest from the sourceUrl. ' +
         UNTRUSTED_DATA_NOTE,

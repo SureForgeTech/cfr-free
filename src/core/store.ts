@@ -55,6 +55,28 @@ export interface SectionRow {
   readonly issueDate: string;
 }
 
+/**
+ * Structural Citation Support (SCS) — the diagnostic vector (G, P, I) from
+ * docs/research/ranking-instrument-design-2026-11-01.md §3.1, computed from
+ * the materialized `section_references` edges. Diagnostic output only: no
+ * search ranking key or candidate-set query ever reads it.
+ */
+export interface CitationSupport {
+  /**
+   * G(s) — distinct citing sections whose non-null, non-empty `part` AND
+   * `subject_group` exactly equal the cited section's own.
+   */
+  readonly subjectGroup: number;
+  /**
+   * P(s) — distinct citing sections whose non-null, non-empty `part` exactly
+   * equals the cited section's own. Missing/empty metadata on either side
+   * never wildcard-matches: such a citing section counts toward `total` only.
+   */
+  readonly part: number;
+  /** I(s) — distinct citing sections overall (self-citations excluded). */
+  readonly total: number;
+}
+
 export interface SearchHit {
   readonly citation: string;
   readonly heading: string;
@@ -211,6 +233,38 @@ FROM section_references r
 JOIN sections s ON s.id = r.citing_id
 WHERE r.cited_citation = ? AND r.citing_title = ?
 ORDER BY s.citation`;
+
+// Structural Citation Support (design doc §3.1): one pass over the
+// materialized edges for one cited citation of one title. `c` is the citing
+// section; `s` (LEFT JOIN) is the cited section, whose part/subject_group
+// define the P/G neighbourhoods — absent from the index, it contributes to
+// `total` only, the same "missing metadata never wildcard-matches" rule as an
+// empty value. count(DISTINCT citing_id) makes repeated references from one
+// citing section count once, and the s.id guard drops self-citations.
+//
+// The title scope is the citing row's title, exactly like citedBy: an edge
+// never crosses titles, so "§ 4.105" in a Title 32 section means Title 32's
+// § 4.105. The cited section is therefore resolved in that same title (the
+// join keys on r.citing_title), and a title that has no such provision
+// leaves its part/subject_group unknown — a count toward `total` only.
+const CITATION_SUPPORT_SQL = `
+SELECT
+  count(DISTINCT r.citing_id) AS total,
+  count(DISTINCT CASE
+    WHEN c.part IS NOT NULL AND c.part <> '' AND c.part = s.part THEN r.citing_id
+  END) AS part,
+  count(DISTINCT CASE
+    WHEN c.part IS NOT NULL AND c.part <> ''
+     AND c.subject_group IS NOT NULL AND c.subject_group <> ''
+     AND c.part = s.part AND c.subject_group = s.subject_group
+    THEN r.citing_id
+  END) AS subject_group
+FROM section_references r
+JOIN sections c ON c.id = r.citing_id
+LEFT JOIN sections s
+  ON s.title = r.citing_title AND s.citation = r.cited_citation
+WHERE r.cited_citation = ? AND r.citing_title = ?
+  AND (s.id IS NULL OR r.citing_id <> s.id)`;
 
 // Full-corpus read for the export command: same row shape as getSection
 // (SELECT * + toSectionRow), citation-ordered like the repo's other
@@ -974,6 +1028,30 @@ export class Store {
   citedBy(citation: string, title: number = DEFAULT_TITLE): string[] {
     const rows = this.stmt(CITED_BY_SQL).all(citation, title) as Record<string, unknown>[];
     return rows.map((row) => String(row['citation']));
+  }
+
+  /**
+   * Structural Citation Support for one citation of `title` (default
+   * {@link DEFAULT_TITLE}): the (G, P, I) diagnostic vector computed over the
+   * materialized edges, scoped to one authority exactly like {@link citedBy}.
+   * Query-independent and deterministic: the same index always yields the
+   * same vector. Zero is a real value — a section nothing cites reports
+   * (0, 0, 0).
+   *
+   * `total` is I(s) — distinct citing sections, self-citations excluded;
+   * `part` is P(s) — those sharing the cited section's part; and
+   * `subjectGroup` is G(s) — those sharing its part AND subject group. A
+   * missing or empty `part`/`subject_group` on either side never wildcard-
+   * matches: that citing section counts toward `total` only.
+   */
+  citationSupport(citation: string, title: number = DEFAULT_TITLE): CitationSupport {
+    const row = this.stmt(CITATION_SUPPORT_SQL).get(citation, title) as
+      Record<string, unknown> | undefined;
+    return {
+      subjectGroup: row === undefined ? 0 : Number(row['subject_group'] ?? 0),
+      part: row === undefined ? 0 : Number(row['part'] ?? 0),
+      total: row === undefined ? 0 : Number(row['total'] ?? 0),
+    };
   }
 
   /**
