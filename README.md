@@ -41,6 +41,11 @@ keys, no telemetry — one Node process and one SQLite file.
   `docs/research/retrieval-baseline-2026-10-20.md`.
 - **Freshness tracking**: the index records the eCFR issue date it was built
   from and warns when it goes stale or drifts from the structure tree.
+- **One store, several titles**: `CFR_TITLES` names the CFR titles a sync
+  covers (Title 38 by default). Each title's provisions are stored under its
+  own authority — a Title 32 sync never touches Title 38's rows — with
+  per-title issue dates, structure and corpus receipts. Reads still default to
+  Title 38.
 - **Backup-friendly**: `cfr-free export <path> [jsonl|md]` writes a consistent
   snapshot of the index you can copy anywhere (sqlite default; `jsonl` and `md`
   for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
@@ -470,6 +475,7 @@ MCP client configs stay uniform):
 | Variable            | Default                    | Meaning                                                                                           |
 | ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------- |
 | `CFR_INDEX_PATH`    | `~/.cfr-free/index.sqlite` | SQLite index location                                                                             |
+| `CFR_TITLES`        | `38`                       | CFR titles to sync (comma-separated, 1–50); each is stored under its own authority                |
 | `CFR_MAX_AGE_DAYS`  | `7`                        | Index older than this is reported stale                                                           |
 | `CFR_AUTO_SYNC`     | `1`                        | Sync at startup when index empty/stale                                                            |
 | `CFR_REFRESH_HOURS` | `0`                        | Hours between background refreshes while serving (0 = off)                                        |
@@ -537,9 +543,9 @@ eCFR API ──sync──▶ SQLite (sections + FTS5 + structure meta)
 - `docs/SPEC.md` — the design authority; `docs/research/delivery-log.md` —
   the review dispositions and the closed delivery record
 
-Sync is atomic: the whole index is replaced inside one `BEGIN IMMEDIATE`
-transaction under WAL, so concurrent readers never see a partial build, and
-an interrupted sync simply rolls back.
+Sync is atomic: the title's slice of the index is replaced inside one
+`BEGIN IMMEDIATE` transaction under WAL, so concurrent readers never see a
+partial build, and an interrupted sync simply rolls back.
 
 ## Data source & attribution
 

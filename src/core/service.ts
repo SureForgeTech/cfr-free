@@ -23,7 +23,7 @@ import {
   type QueryTerm,
   visibleMatches,
 } from './query.js';
-import { Store, type SearchHit } from './store.js';
+import { DEFAULT_TITLE, Store, type SearchHit } from './store.js';
 
 /**
  * Application facade shared by the MCP server and the HTTP API. All input
@@ -645,11 +645,18 @@ export class CFRService {
     return browseStructure(structure, parsed.data);
   }
 
-  /** Freshness report for the local index. */
+  /**
+   * Freshness report for the local index.
+   *
+   * Every number here describes the SERVING title (Title 38): the issue
+   * date, the row counts and the structure-drift check are that title's
+   * own. A multi-title store holds other authorities' rows too, and
+   * counting them here would report a healthy index as drifted.
+   */
   status(): IndexStatus {
     const issueDate = this.store.getMeta('issue_date');
     const syncedAt = this.store.getMeta('synced_at');
-    const sections = this.store.countSections();
+    const sections = this.store.countSections(DEFAULT_TITLE);
     const appendices = Number(this.store.getMeta('appendices_count') ?? '0');
     let stale = true;
     if (syncedAt !== null) {

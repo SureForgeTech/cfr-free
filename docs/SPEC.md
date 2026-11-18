@@ -9,7 +9,7 @@ A self-hosted **38 CFR data service ("Titan")** plus an **MCP server**, TypeScri
 - Zero-infrastructure runtime: Node ≥ 22.13 built-ins only (`node:sqlite`, `node:http`).
 - Local gates green: dependency audit clean, risky patterns lint-blocked, strict TS, high test coverage, low complexity.
 
-**Non-goals:** titles other than 38 (design keeps `TITLE` a constant), auth/multi-tenant HTTP, vector/semantic search, live write-back to eCFR.
+**Non-goals:** serving a title other than 38 (the STORE may hold several — `CFR_TITLES` names them — but every read surface still answers for Title 38; title-scoped serving is the next packet), auth/multi-tenant HTTP, vector/semantic search, live write-back to eCFR.
 
 ## 2. Architecture
 
@@ -90,9 +90,11 @@ test/                 vitest unit + integration (mocked fetch, temp SQLite)
 
 Endpoints (base `https://www.ecfr.gov`, fixed origin — no SSRF surface):
 
-1. `GET /api/versioner/v1/titles.json` → Title 38 `up_to_date_as_of` (fallback `latest_issue_date`). eCFR rejects dates past the issue date, so this is resolved every sync.
-2. `GET /api/versioner/v1/structure/{date}/title-38.json` (~124 KB) → browse tree, stored in `meta`.
-3. `GET /api/versioner/v1/full/{date}/title-38.xml` (~2 MB gzip'd, verified: 2953 SECTION + 17 APPENDIX DIVs, exact match with structure JSON) → parsed in one pass.
+1. `GET /api/versioner/v1/titles.json` → each enabled title's `up_to_date_as_of` (fallback `latest_issue_date`). eCFR rejects dates past the issue date, so this is resolved every sync.
+2. `GET /api/versioner/v1/structure/{date}/title-{N}.json` (~124 KB for Title 38) → browse tree, stored in `meta`.
+3. `GET /api/versioner/v1/full/{date}/title-{N}.xml` (~2 MB gzip'd for Title 38, verified: 2953 SECTION + 17 APPENDIX DIVs, exact match with structure JSON) → parsed in one pass.
+
+**Which titles a sync covers.** `CFR_TITLES` names the enabled titles (default `38`); a sync resolves and rebuilds each of them SEQUENTIALLY, Title 38 first and then the rest ascending, so a failure in another title never costs the reader their Title 38 index. Each title's rows are written under its own authority — the store keys rows by `(title, citation)`, and a title-scoped rebuild replaces only that title's slice, so one title's sync never wipes another's. Per-title metadata (`title.<N>.issue_date`, `title.<N>.structure_json`, `title.<N>.corpus_hash`, `title.<N>.last_changes`, …) describes that title alone; Title 38 additionally keeps the legacy global keys (`issue_date`, `structure_json`, `corpus_hash`, `last_changes`) the existing read surfaces use. The change report for a title is computed against THAT title's rows only — a sibling title is never reported as added or removed. Every read surface still defaults to Title 38; another title's rows are stored but not yet served.
 
 Parse rule: walk `<DIVn>` nodes by their `TYPE` attribute (`TITLE|CHAPTER|PART|SUBPART|SUBJGRP|SECTION|APPENDIX`), maintaining an identifier stack → each section gets `path`, `part`, `subpart` columns. Headings from `<HEAD>` (strip `§ 4.125 ` prefix). Sanity check: parsed count vs. structure count; hard-fail on 0, warn on mismatch.
 
@@ -195,7 +197,7 @@ re-labelled: the upstream wording already labels them ("Note:",
 
 **Image content (P1-01):** some provisions publish their rating tables as `<img>` elements (15 in the 2026-10-16 document, across 9 provisions — 1.9, 4.71, 4.71a, 4.76a, 4.77, 4.85, 17.610, 45.605, 59.50). The parser cannot include image content offline and must never drop it silently: every `<img>` — inline in a paragraph, nested in a container, or a direct content child — is replaced IN PLACE by the explicit marker `[image content not included: <path>]` in BOTH the text and the markdown representation. Only a vetted relative eCFR graphics path (`/graphics/<file>`, safe charset, no traversal) is named; any other source (scheme-qualified, host-qualified, outside `/graphics/`, or missing) yields `[image content not included: unrecognized image source]` and is never echoed. Nothing is fetched, OCR'd, or transcribed: the service stays fully offline, and a matching section count never implies complete textual coverage — the sync report states how many provisions carry the marker (`meta.image_content_sections`).
 
-Sync is a single transaction: `DELETE FROM sections` + bulk insert (FTS5 external-content triggers keep the index consistent). Sync is atomic — readers never see a half-built index (SQLite WAL mode).
+Sync is a single transaction: the title's slice is replaced (`DELETE FROM sections WHERE title = ?` — the whole table only when the whole index is rebuilt) and the new rows are bulk-inserted (FTS5 external-content triggers keep the index consistent). Sync is atomic — readers never see a half-built index (SQLite WAL mode).
 
 **Stored snapshot comparison.** `cfr-free compare <from_snapshot> <to_snapshot> [--part P]` is the CLI twin of the MCP `compare_snapshots` tool: it reads two stored cfr-free index files (typically `cfr-free export` copies) through the same read-only, strict-schema comparison path, prints the changed/added/removed provisions with their recorded dates, dated verification URLs and bounded text summaries, and never contacts eCFR.
 

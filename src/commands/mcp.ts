@@ -3,10 +3,9 @@ import type { AppConfig } from '../config.js';
 import type { Logger } from '../logger.js';
 import { CFRService } from '../core/service.js';
 import { Store } from '../core/store.js';
-import { syncIndex } from '../core/sync.js';
 import { createShutdownController } from '../process-utils.js';
 import { buildMcpServer } from '../mcp/server.js';
-import { ensureIndex, createEcfrApi } from './ensure-index.js';
+import { ensureIndex, createEcfrApi, syncAllTitles } from './ensure-index.js';
 import { startRefreshScheduler, type RefreshScheduler } from './refresh-scheduler.js';
 
 /**
@@ -44,7 +43,10 @@ export async function runMcpCommand(config: AppConfig, logger: Logger): Promise<
         refreshHours: config.refreshHours,
         logger,
         refresh: async () => {
-          await syncIndex({ ecfr, store, logger });
+          // Every configured title, in the same order the startup sync used:
+          // a refresh that covered only Title 38 would leave the other
+          // titles stale.
+          await syncAllTitles(store, config, logger, { createEcfr: () => ecfr });
         },
       });
       scheduler.schedule();
