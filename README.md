@@ -234,9 +234,13 @@ CFR_INDEX_PATH=/tmp/cfr-smoke.sqlite node dist/cli.js sync   # ~5 s, then delete
 ### Verifying an index or a snapshot
 
 `cfr-free verify` answers two questions about a local file: is it usable, and
-does the corpus receipt it records still describe its own Title 38 rows? It
-reads only that file — no network, no eCFR fetch — and never creates,
-repairs or rewrites it.
+does the corpus receipt it records still describe its own Title 38 rows?
+Verification runs offline and leaves the main database file and its
+permissions intact. The configured index is read with SQLite's WAL protocol
+while sync or serve is running. SQLite can update shared memory in the
+existing `-shm` file and can create missing `-wal` and `-shm` sidecars if the
+directory is writable. A positional snapshot must be a standalone file
+without journal sidecars and is opened immutably.
 
 ```bash
 cfr-free verify                     # the index at CFR_INDEX_PATH
@@ -507,6 +511,9 @@ non-loopback address you must put it behind your own reverse proxy/auth
 The serve root `/` also serves a **read-only web UI** (search + section
 reader with chapter/part browse + a redline view, over the same JSON API, hash-routed) — no auth, loopback bind by
 default like the rest of the surface.
+
+The XML parser escapes inline links, reference links, images, raw HTML and
+angle-bracket autolinks in the Markdown body. Bare URLs are preserved.
 
 ## Configuration
 

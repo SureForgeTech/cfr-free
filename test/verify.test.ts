@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -442,6 +442,35 @@ describe('verify CLI dispatch and exit codes', () => {
       expect(out.join('')).toContain(`verified ${snapshot}`);
       expect(out.join('')).toContain('corpus receipt: match');
       expect(sha256(snapshot)).toBe(before);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('verifies committed WAL data while a writer has an uncommitted change', async () => {
+    const temp = openReceiptedStore();
+    try {
+      const writer = new DatabaseSync(temp.indexPath);
+      try {
+        writer.exec("BEGIN IMMEDIATE; UPDATE meta SET value = 'pending' WHERE key = 'corpus_hash'");
+        const wal = `${temp.indexPath}-wal`;
+        expect(statSync(wal).size).toBeGreaterThan(0);
+        const before = sha256(temp.indexPath);
+        const walBefore = sha256(wal);
+        const mode = statSync(temp.indexPath).mode;
+        const files = readdirSync(temp.dir);
+        const { out, io } = makeIo({ CFR_INDEX_PATH: temp.indexPath });
+        expect(await main(['verify'], io)).toBe(EXIT.OK);
+        expect(out.join('')).toContain('3 sections + 1 appendices');
+        expect(out.join('')).toContain('corpus receipt: match');
+        expect(sha256(temp.indexPath)).toBe(before);
+        expect(sha256(wal)).toBe(walBefore);
+        expect(statSync(temp.indexPath).mode).toBe(mode);
+        expect(readdirSync(temp.dir)).toEqual(files);
+        expect(await main(['verify', temp.indexPath], io)).toBe(EXIT.USAGE);
+      } finally {
+        writer.close();
+      }
     } finally {
       temp.cleanup();
     }

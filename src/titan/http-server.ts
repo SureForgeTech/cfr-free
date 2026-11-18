@@ -922,6 +922,7 @@ function refuseNonLocalRequest(
     );
     return true;
   }
+  // Return 403 so a cross-site page cannot trigger upstream fetches.
   if (req.headers['sec-fetch-site'] === 'cross-site') {
     sendJson(
       req,

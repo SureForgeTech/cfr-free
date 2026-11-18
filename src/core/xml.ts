@@ -540,9 +540,10 @@ function extractSection(
     subjectGroup: stackField(stack, 'SUBJGRP'),
     path: stackPath(stack),
     text: rendered.text,
-    // Preserve the plain text and neutralize inline links, images, raw HTML,
-    // and angle-bracket autolinks in the Markdown output.
+    // Preserve the plain text and neutralize inline links, reference links,
+    // images, raw HTML and angle-bracket autolinks in the Markdown output.
     markdown: rendered.markdown
+      .replace(/^(\s{0,3})\[(?=[^\]]+\]:)/gm, '$1\\[')
       .replace(/!\[/g, '!\\[')
       .replace(/\]\(/g, ']\\(')
       .replace(/<(?=[A-Za-z/!])/g, '&lt;'),

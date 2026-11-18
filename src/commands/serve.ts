@@ -98,6 +98,7 @@ export async function runServeCommand(
       // loopback Host (see HttpServerOptions).
       // A remote bind (the container image) is guarded too once the operator
       // has named its hosts in CFR_ALLOWED_HOSTS: then the names are known.
+      // Guarded binds also return 403 for Sec-Fetch-Site: cross-site.
       ...(isLoopbackHost(config.host) || config.allowedHosts.length > 0
         ? { localOnly: true, allowedHosts: config.allowedHosts }
         : {}),

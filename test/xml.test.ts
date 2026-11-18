@@ -359,6 +359,18 @@ describe('image content markers (P1-01)', () => {
     );
   });
 
+  it('neutralizes reference link definitions and preserves bare URLs', () => {
+    const url = 'https://example.org/some(path)?q=value#section';
+    const xml =
+      '<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD>' +
+      `<P>See [this][ref], [ref][], and [ref].</P><P>   [ref]: ${url}</P>` +
+      `<P>Visit ${url} directly.</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    const text = `See [this][ref], [ref][], and [ref].\n\n[ref]: ${url}\n\nVisit ${url} directly.`;
+    expect(section?.text).toBe(text);
+    expect(section?.markdown).toBe(text.replace('\n\n[ref]:', '\n\n\\[ref]:'));
+  });
+
   it.each([
     ['&lt;img src="https://evil.example/b.png"&gt;', '<img src="https://evil.example/b.png">'],
     ['&lt;https://evil.example/x&gt;', '<https://evil.example/x>'],

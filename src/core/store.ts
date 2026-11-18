@@ -299,10 +299,12 @@ export interface StoreOpenOptions {
   /** Override the busy-wait timeout (tests use a short one). */
   readonly busyTimeoutMs?: number;
   /**
-   * Open a standalone snapshot as immutable evidence. The file and its
-   * directory are left untouched, and journal sidecars are refused.
+   * True opens a standalone snapshot as immutable evidence and refuses
+   * journal sidecars. 'live' opens the main file read-only and uses SQLite's
+   * WAL protocol, which can update shared memory in the -shm sidecar and
+   * create missing WAL/SHM sidecars if the directory is writable.
    */
-  readonly readOnly?: boolean;
+  readonly readOnly?: boolean | 'live';
   /**
    * Adopt an OLDER schema version (0 < version < SCHEMA_VERSION) instead of
    * failing. Only the sync path may set this: `syncIndex` immediately
@@ -735,16 +737,19 @@ function ensureDirectoryPermissions(filePath: string): void {
   if (directory === defaultDirectory) tightenPermissions(defaultDirectory, 'directory');
 }
 
-function evidenceDatabaseTarget(filePath: string): string {
+function readOnlyDatabaseTarget(filePath: string, mode: true | 'live'): string {
   const resolved = realpathSync(filePath);
+  const target = pathToFileURL(resolved);
+  target.searchParams.set('mode', 'ro');
   // SQLite's ordinary read-only mode can create WAL/SHM files. Immutable
   // mode avoids those writes but ignores journals, so require a standalone
   // snapshot before using it.
-  if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(resolved + suffix))) {
-    throw new StoreError('index has SQLite journal sidecars — use a standalone cfr-free export');
+  if (mode === true) {
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(resolved + suffix))) {
+      throw new StoreError('index has SQLite journal sidecars — use a standalone cfr-free export');
+    }
+    target.searchParams.set('immutable', '1');
   }
-  const target = pathToFileURL(resolved);
-  target.searchParams.set('immutable', '1');
   return target.href;
 }
 
@@ -760,7 +765,7 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
   if (!readOnly && onDisk) ensureDirectoryPermissions(filePath);
 
   const db = readOnly
-    ? new DatabaseSync(evidenceDatabaseTarget(filePath), { readOnly: true })
+    ? new DatabaseSync(readOnlyDatabaseTarget(filePath, readOnly), { readOnly: true })
     : new DatabaseSync(filePath);
   try {
     // The file is an INPUT: `export` exists so an index can be handed to
@@ -771,7 +776,7 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     db.exec('PRAGMA trusted_schema = OFF');
     refuseForeignDatabase(db);
     if (!readOnly && onDisk) tightenPermissions(filePath, 'file');
-    // A read-only evidence open must not rewrite a delete-mode snapshot's
+    // A read-only open must not rewrite a delete-mode snapshot's
     // header just to prefer WAL; that mutation belongs to the owner/sync.
     if (!readOnly) db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
@@ -785,7 +790,7 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     assertQuickCheck(db);
     if (readOnly) {
       ensureReadOnlySchemaVersion(db);
-      // A read-only evidence open must also hold the OBJECTS a read path
+      // A read-only open must also hold the OBJECTS a read path
       // needs: the version stamp alone does not prove the file is usable.
       assertUsableSchema(db);
     } else {

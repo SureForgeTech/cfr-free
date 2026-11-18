@@ -294,11 +294,14 @@ gives a verdict of `match`, `mismatch`, or `absent`. An absent receipt leaves
 the file readable and usable, with no receipt to confirm which rows a sync wrote.
 The report also states the schema check (`PRAGMA quick_check`, run by the
 open), the per-kind provision counts and the recorded issue date
-(`title.38.issue_date`, the legacy `issue_date` key as fallback). The file is
-opened through the strict read-only path — a verification never creates,
-repairs or rewrites the file it reads, so it can be run on evidence, and a
-stored snapshot verifies against the receipt recorded with ITS rows, not
-against the live index's. Exit semantics, reusing the existing exit codes
+(`title.38.issue_date`, the legacy `issue_date` key as fallback). The
+configured index is opened in SQLite's read-only mode and all report reads
+share one transaction, including committed WAL data. SQLite can update
+shared memory in the existing `-shm` file and can create missing `-wal` and
+`-shm` sidecars if the directory is writable. The main database file and
+its permissions stay intact. A positional snapshot uses the immutable
+evidence path, which refuses journal sidecars, and verifies against its
+own recorded receipt. Exit semantics, reusing the existing exit codes
 (no new code): `0` for a readable index, INCLUDING an absent receipt;
 `1` when the recorded receipt does not match the current rows; `2` (the
 existing usage/invalid-input mapping) for a missing, unreadable or non-index
@@ -403,7 +406,7 @@ Hardening: no request bodies, zod-validated query strings, router-level byte cap
 
 For rate limiting behind a reverse proxy, `CFR_TRUSTED_PROXIES` accepts comma-separated IP addresses. Only a connection from an exact trusted address can use `X-Forwarded-For`. The server walks from the right through trusted hops to the first untrusted IP and falls back to the socket address if that walk encounters a malformed entry. IPv4-mapped IPv6 and IPv4 representations share an identity. The limiter groups other IPv6 peers by /64 and evicts the least recently seen buckets in batches when its peer map reaches capacity.
 
-Diff, redline and historical lookups reject dates later than today in UTC before fetching from eCFR. XML parsing escapes inline Markdown links, image syntax, raw HTML and angle-bracket autolinks in the rendered body. The plain-text body preserves the source text.
+Diff, redline and historical lookups reject dates later than today in UTC before fetching from eCFR. XML parsing escapes inline links, reference links, images, raw HTML and angle-bracket autolinks in the Markdown body. It preserves bare URLs in Markdown and keeps the plain-text body as written.
 
 The store disables `trusted_schema` and checks ownership of the schema before writing to the index, refusing files that contain foreign tables or an incompatible `sections` table. On writable opens it uses mode `0700` for the default app data directory and directories it creates, and mode `0600` for the database file itself (including a custom `CFR_INDEX_PATH`) and its WAL and shared-memory files where supported. Existing custom parent directories keep their permissions. Evidence opens use standalone snapshots, preserve permissions and create no journal files. `export` creates its output exclusively via a private temporary file and refuses any existing path, including a dangling symlink.
 
