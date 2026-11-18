@@ -82,6 +82,9 @@ const searchOutputSchema = z.object({
   unmatchedTerms: z.array(z.string()),
   hits: z.array(
     z.object({
+      title: z
+        .number()
+        .describe('the CFR title this hit belongs to — every hit names its own authority'),
       citation: z.string(),
       citationDisplay: z.string(),
       sourceUrl: z.string(),
@@ -100,6 +103,7 @@ const searchOutputSchema = z.object({
 });
 
 const sectionOutputSchema = z.object({
+  title: z.number().describe('the CFR title this provision belongs to'),
   citation: z.string(),
   kind: z.enum(['section', 'appendix']),
   heading: z.string(),
@@ -348,9 +352,12 @@ export function registerTools(
   server.registerTool(
     'search_regulations',
     {
-      title: 'Search Title 38 CFR regulations',
+      title: 'Search CFR regulations',
       description:
-        'Full-text search across the local Title 38 (VA) CFR index using ranked keyword matching. ' +
+        'Full-text search across the local CFR index using ranked keyword matching. ' +
+        'The search runs in Title 38 (VA) by default; `title` selects another title ' +
+        '(e.g. 32 for National Defense) or `all` for every stored title — every hit carries ' +
+        'the title it belongs to, so two authorities are never blended into one unlabeled list. ' +
         'Returns section citations, headings, relevance snippets, bm25 scores (lower is better) ' +
         'and the query terms visible in each hit. ' +
         'The CANDIDATE SET is every provision matching AT LEAST ONE query term, so a provision ' +
@@ -411,6 +418,13 @@ export function registerTools(
           .regex(/^[IVXLCDM]+$/)
           .optional()
           .describe('restrict to one chapter, exact case-sensitive Roman numeral (e.g. "I")'),
+        title: z
+          .union([z.number().int().min(1).max(50), z.literal('all')])
+          .optional()
+          .describe(
+            'the CFR title to search in (default 38 — Veterans Benefits); "all" searches every ' +
+              'stored title and labels every hit with its own title',
+          ),
       },
       outputSchema: searchOutputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
@@ -424,6 +438,7 @@ export function registerTools(
           part: args.part,
           kind: args.kind,
           chapter: args.chapter,
+          title: args.title,
         });
         const structuredContent: SearchOutput = {
           ...response,
@@ -443,21 +458,36 @@ export function registerTools(
     {
       title: 'Read a CFR section',
       description:
-        'Fetch the full text of one Title 38 CFR section or appendix as markdown. Accepts flexible citations: ' +
+        'Fetch the full text of one CFR section or appendix as markdown. Accepts flexible citations: ' +
         '"4.125", "§ 4.125", "38 CFR 4.125", or appendix names like "Appendix A to Part 4". ' +
-        'Returns heading, hierarchy path, issue date and an ecfr.gov permalink. ' +
+        'Returns heading, hierarchy path, issue date, the CFR title the provision belongs to, ' +
+        'and an ecfr.gov permalink. ' +
+        'The citation is resolved across every stored title when `title` is not ' +
+        'given: one that only ONE title holds is served as it always was, and one that ' +
+        'MORE THAN ONE title holds is refused as ambiguous (the error names the titles) ' +
+        "rather than answered with the wrong authority's text. " +
         `The body is capped at ${PROVISION_TEXT_CAP} characters; a body that was cut sets \`truncated: true\`, ` +
         'and the truncated text is incomplete — read the rest from the sourceUrl. ' +
         UNTRUSTED_DATA_NOTE,
       inputSchema: {
         citation: z.string().min(1).max(120).describe('the citation to read, e.g. "38 CFR 4.125"'),
+        title: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe(
+            'the CFR title to read within; without it the citation is resolved across every ' +
+              'stored title and refused when more than one of them holds it',
+          ),
       },
       outputSchema: sectionOutputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async (args) =>
       runTool(logger, 'get_section', async () => {
-        const section = service.getSection(args.citation);
+        const section = service.getSection(args.citation, args.title);
         const text = capProvision(section.text);
         const markdown = capProvision(section.markdown);
         const result: SectionOutput = {

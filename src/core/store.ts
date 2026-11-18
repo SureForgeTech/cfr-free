@@ -15,7 +15,14 @@ import {
   type QueryTerm,
 } from './query.js';
 import { extractReferences } from './references.js';
+import { DEFAULT_TITLE, type TitleScope } from './titles.js';
 import type { SectionKind, RawSection } from './xml.js';
+
+// The title vocabulary lives in a leaf module (`titles.ts`) so the permalink
+// builder can share it without importing the store; it is re-exported here
+// because the store is where the title scope is enforced.
+export { DEFAULT_TITLE } from './titles.js';
+export type { TitleScope } from './titles.js';
 
 /**
  * SQLite index of the eCFR corpus: one row per section/appendix per title,
@@ -32,12 +39,10 @@ export class StoreError extends Error {
 }
 
 /**
- * The title every read path scopes to when the caller names none, and the
- * default a write stamps when a section omits its title. Title 38 (Veterans
- * Benefits) is the product's mission surface; every other title is opt-in
- * per query (multi-title design, 2026-11-13).
+ * The CFR title every read path scopes to when the caller names none lives
+ * in `titles.ts` (shared with the permalink builder); see the re-export
+ * above.
  */
-export const DEFAULT_TITLE = 38;
 
 export interface SectionRow {
   readonly title: number;
@@ -56,6 +61,14 @@ export interface SectionRow {
 }
 
 export interface SearchHit {
+  /**
+   * The CFR title this hit belongs to.
+   *
+   * Every hit carries its OWN authority: a store holds several titles' rows,
+   * and a hit that did not say which title it came from would blend two
+   * authorities into one unlabeled list (multi-title design, 2026-11-13).
+   */
+  readonly title: number;
   readonly citation: string;
   readonly heading: string;
   readonly part: string | null;
@@ -79,14 +92,14 @@ export interface SearchQuery {
   /**
    * The CFR title the search runs in (default {@link DEFAULT_TITLE}).
    *
-   * The search is scoped to ONE authority: the store holds every enabled
-   * title's rows, and a citation may exist in more than one of them. An
-   * unscoped search would mix authorities in one result list and label every
-   * hit with the serving title's display form — so the scope is bound here
-   * and carried through the candidate count, the AND tier and the ranked
-   * rows alike.
+   * The search is scoped to ONE authority unless the caller asks for every
+   * stored title (`all`): the store holds every enabled title's rows, and a
+   * citation may exist in more than one of them. An unscoped search would
+   * mix authorities in one result list and label every hit with the serving
+   * title's display form — so the scope is bound here and carried through
+   * the candidate count, the AND tier and the ranked rows alike.
    */
-  readonly title?: number | undefined;
+  readonly title?: TitleScope | undefined;
 }
 
 export interface SearchOutcome {
@@ -301,7 +314,7 @@ const AND_TIER_KEY = '(CASE WHEN a.rowid IS NOT NULL THEN 1 ELSE 0 END) DESC';
  */
 const SELECT_MATCHES_SQL = (where: string, orderBy: string): string => `
 ${AND_TIER_CTE}
-SELECT s.citation, s.heading, s.part, s.path, s.issue_date AS issue_date, ${SNIPPET_EXPR} AS snippet,
+SELECT s.title, s.citation, s.heading, s.part, s.path, s.issue_date AS issue_date, ${SNIPPET_EXPR} AS snippet,
        ${SCORE_EXPR}
 FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
@@ -338,19 +351,40 @@ function presentFilters(query: SearchQuery): SearchFilter[] {
 }
 
 /**
- * The WHERE tail for a search: the title scope first, then the optional
- * filters, each a bound value.
+ * The WHERE tail of a search: the title scope first, then the optional
+ * filters — every value bound.
  *
  * The TITLE SCOPE is part of the tail rather than a separate clause so the
  * candidate count and the ranked rows cannot drift apart: both build their
  * tail here, and a query that forgot the scope would have to forget it in
  * one place only. `s.title = ?` is a fixed column name with a bound value,
  * so the title never reaches the SQL text.
+ *
+ * The `all` scope is the ONE tail without a title predicate: every stored
+ * title is a candidate, and the ranking stays the ranking it was (no
+ * cross-title weights — multi-title design, 2026-11-13). Its bound value
+ * list is empty too, so the statement and its parameters cannot disagree
+ * about which scope they describe.
  */
-function filterClause(filters: readonly SearchFilter[]): string {
-  const scope = ' AND s.title = ?';
-  const tail = filters.map(([name]) => ` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`).join('');
-  return scope + tail;
+interface SearchScope {
+  /** The SQL tail: fixed column names, bound values only. */
+  readonly clause: string;
+  /** The values bound to it, in the order they appear in the statement. */
+  readonly params: readonly (string | number)[];
+}
+
+function scopeClause(title: TitleScope, filters: readonly SearchFilter[]): SearchScope {
+  const parts: string[] = [];
+  const params: (string | number)[] = [];
+  if (title !== 'all') {
+    parts.push(' AND s.title = ?');
+    params.push(title);
+  }
+  for (const [name, value] of filters) {
+    parts.push(` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`);
+    params.push(value);
+  }
+  return { clause: parts.join(''), params };
 }
 
 const COUNT_MATCHES_SQL = (where: string): string => `
@@ -963,6 +997,27 @@ export class Store {
   }
 
   /**
+   * Every stored row that carries this citation, ACROSS every title.
+   *
+   * The section read needs to know whether a citation is UNIQUE in the store
+   * or held by more than one title: a citation that exists in two titles is
+   * an ambiguity the caller must resolve, not a provision to guess at. The
+   * rows come back in title order, so the answer is deterministic.
+   *
+   * The kind is honoured exactly as {@link getSection} honours it (a
+   * section's citation is matched exactly, an appendix's case-insensitively),
+   * so a lookup here finds what a read of that kind would find.
+   */
+  sectionsForCitation(citation: string, kind: SectionKind): SectionRow[] {
+    const sql =
+      kind === 'appendix'
+        ? 'SELECT * FROM sections WHERE kind = ? AND citation = ? COLLATE NOCASE ORDER BY title'
+        : 'SELECT * FROM sections WHERE kind = ? AND citation = ? ORDER BY title';
+    const rows = this.stmt(sql).all(kind, citation) as Record<string, unknown>[];
+    return rows.map(toSectionRow);
+  }
+
+  /**
    * Citations of indexed sections of `title` (default {@link DEFAULT_TITLE})
    * whose text references `citation` — the reverse of the forward
    * `references` list on a section read. Sorted lexicographically by citing
@@ -1052,12 +1107,9 @@ export class Store {
     return row ? toSectionRow(row) : null;
   }
 
-  private countMatches(ftsQuery: string, filters: readonly SearchFilter[], title: number): number {
-    const row = this.stmt(COUNT_MATCHES_SQL(filterClause(filters))).get(
-      ftsQuery,
-      title,
-      ...filters.map(([, value]) => value),
-    ) as Record<string, unknown> | undefined;
+  private countMatches(ftsQuery: string, scope: SearchScope): number {
+    const row = this.stmt(COUNT_MATCHES_SQL(scope.clause)).get(ftsQuery, ...scope.params) as
+      Record<string, unknown> | undefined;
     return row ? Number(row['n'] ?? 0) : 0;
   }
 
@@ -1090,6 +1142,7 @@ export class Store {
     const offset = (Math.max(1, query.page) - 1) * perPage;
     const filters = presentFilters(query);
     const title = query.title ?? DEFAULT_TITLE;
+    const scope = scopeClause(title, filters);
 
     // ONE parse of the query feeds both tiers: the candidate query (OR) and
     // the AND-tier membership query (AND) are the same fragments joined
@@ -1103,22 +1156,18 @@ export class Store {
     }
     const { or: orQuery, and: andQuery } = queries;
 
-    const total = this.countMatches(orQuery, filters, title);
+    const total = this.countMatches(orQuery, scope);
     if (total === 0) {
       return { hits: [], total: 0, page: query.page, perPage, matchMode: 'or' };
     }
 
     const key = headingMatchKey(terms);
     const demotion = asksAboutExceptions(terms) ? '' : `${EXCEPTION_DEMOTION_KEY}, `;
-    const sql = SELECT_MATCHES_SQL(
-      filterClause(filters),
-      `${key.clause}${AND_TIER_KEY}, ${demotion}`,
-    );
+    const sql = SELECT_MATCHES_SQL(scope.clause, `${key.clause}${AND_TIER_KEY}, ${demotion}`);
     const rows = this.stmt(sql).all(
       andQuery,
       orQuery,
-      title,
-      ...filters.map(([, value]) => value),
+      ...scope.params,
       ...key.params,
       perPage,
       offset,
@@ -1127,6 +1176,7 @@ export class Store {
     const hits = rows.map((row) => {
       const record = row as Record<string, unknown>;
       const hit = {
+        title: Number(record['title'] ?? DEFAULT_TITLE),
         citation: String(record['citation']),
         heading: String(record['heading']),
         part: nullableString(record['part']),

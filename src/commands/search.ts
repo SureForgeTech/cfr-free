@@ -8,7 +8,8 @@ import { ensureIndex, createEcfrApi } from './ensure-index.js';
 
 /**
  * The search parameters the CLI accepts, mirroring the HTTP query
- * parameters: `--page`, `--per-page`, `--part`, `--kind`, `--chapter`.
+ * parameters: `--page`, `--per-page`, `--part`, `--kind`, `--chapter`,
+ * `--title`.
  */
 export interface SearchOptions {
   readonly page?: number | undefined;
@@ -16,6 +17,11 @@ export interface SearchOptions {
   readonly part?: string | undefined;
   readonly kind?: 'section' | 'appendix' | undefined;
   readonly chapter?: string | undefined;
+  /**
+   * The CFR title to search in: a title number, or `all` (every stored
+   * title — search only). Absent means Title 38.
+   */
+  readonly title?: number | 'all' | undefined;
   /** Search against the built-in demo index without requiring network or local sync. */
   readonly demo?: boolean | undefined;
   /** Expand clinical and conversational terms to official diagnostic codes. */

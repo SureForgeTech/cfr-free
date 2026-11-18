@@ -52,7 +52,8 @@ Usage:
                                      point-in-time archive, 2017 onward)
   cfr-free search <query>  Ranked provisions from the local index
                              Options: --json, --page N, --per-page N,
-                             --part P, --kind section|appendix, --chapter C, --demo, --semantic
+                             --part P, --kind section|appendix, --chapter C,
+                             --title N|all, --demo, --semantic
   cfr-free serve          Start the Titan HTTP API (default http://127.0.0.1:8787; --demo for sample data)
   cfr-free demo           Instant offline demo server with core rating schedules
   cfr-free export <path> [jsonl|md]  Snapshot the index (sqlite default;
@@ -245,6 +246,11 @@ export type ParsedCommand =
       readonly part?: string | undefined;
       readonly kind?: 'section' | 'appendix' | undefined;
       readonly chapter?: string | undefined;
+      /**
+       * The CFR title to search in: a title number, or `all` (every stored
+       * title — search only). Absent means Title 38.
+       */
+      readonly title?: number | 'all' | undefined;
       readonly demo?: boolean | undefined;
       readonly semantic?: boolean | undefined;
     }
@@ -509,6 +515,7 @@ const SEARCH_FLAGS: Readonly<Record<string, boolean>> = {
   '--part': true,
   '--kind': true,
   '--chapter': true,
+  '--title': true,
   '--demo': false,
   '--semantic': false,
 };
@@ -615,6 +622,7 @@ function parseSearchArgs(rest: readonly string[]): ParsedCommand {
   const part = values['--part'];
   const chapter = values['--chapter'];
   const kind = values['--kind'];
+  const title = values['--title'];
 
   const input = validateSearchInput({
     query,
@@ -627,6 +635,10 @@ function parseSearchArgs(rest: readonly string[]): ParsedCommand {
     // checks", and the service is what decides.
     ...(kind === undefined ? {} : { kind: kind as 'section' | 'appendix' }),
     ...(chapter === undefined ? {} : { chapter }),
+    // The title is handed over as it was typed, for the same reason: the
+    // service accepts a title number or `all`, and rejects anything else
+    // in its own words (a rejected flag is a usage error — exit 2).
+    ...(title === undefined ? {} : { title }),
   });
 
   return {
@@ -638,6 +650,7 @@ function parseSearchArgs(rest: readonly string[]): ParsedCommand {
     part: input.part,
     kind: input.kind,
     chapter: input.chapter,
+    ...(input.title === undefined ? {} : { title: input.title }),
     ...(switches.has('--demo') ? { demo: true } : {}),
     ...(switches.has('--semantic') ? { semantic: true } : {}),
   };
@@ -935,6 +948,7 @@ export async function main(argv: readonly string[], io: MainIO): Promise<number>
         part: parsed.part,
         kind: parsed.kind,
         chapter: parsed.chapter,
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
         demo: parsed.demo,
         semantic: parsed.semantic,
       });

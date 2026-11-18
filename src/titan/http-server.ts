@@ -354,6 +354,9 @@ function handleSearch(
     // Kind is validated by the service's zod schema: invalid values must reach it (400 invalid_input).
     kind: (url.searchParams.get('kind') ?? undefined) as 'section' | 'appendix' | undefined,
     chapter: url.searchParams.get('chapter') ?? undefined,
+    // The title is validated by the service too: a title number, or the
+    // literal `all` (every stored title, each hit labeled with its own).
+    title: url.searchParams.get('title') ?? undefined,
   });
   sendJson(
     req,
@@ -390,6 +393,7 @@ function handleSection(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   pathname: string,
+  url: URL,
 ): void {
   const raw = pathname.slice(SECTIONS_PREFIX.length);
   let citation: string;
@@ -399,7 +403,11 @@ function handleSection(
     sendJson(req, res, 400, errorBody('invalid_input', 'malformed URL encoding'));
     return;
   }
-  const section = service.getSection(citation);
+  // The title names the CFR title to read within; without one the citation
+  // is resolved across every stored title (and refused when it is
+  // ambiguous). `all` is refused here too: a read answers with ONE
+  // provision.
+  const section = service.getSection(citation, url.searchParams.get('title') ?? undefined);
   sendJson(req, res, 200, { ...section }, 'public, max-age=3600', REVALIDATABLE);
 }
 
@@ -779,7 +787,7 @@ async function dispatch(
     return;
   }
   if (pathname.startsWith(SECTIONS_PREFIX)) {
-    handleSection(service, req, res, pathname);
+    handleSection(service, req, res, pathname, url);
     return;
   }
   if (pathname === BROWSE_PATH) {

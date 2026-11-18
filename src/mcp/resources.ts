@@ -115,7 +115,10 @@ export function registerResources(server: McpServer, service: CFRService, logger
     },
     async (uri) => {
       try {
-        const section = service.getSection('3.1');
+        // The resource IS "38 CFR § 3.1", so the title is named: without it
+        // the read resolves the citation across every stored title, and a
+        // second title's own § 3.1 would make this resource ambiguous.
+        const section = service.getSection('3.1', 38);
         // Defense-in-depth: CFRService.getSection throws on a miss today, but
         // a null must never serialize as JSON `null` content — that reads as
         // an indistinguishable-from-success response. ServiceError (not a
