@@ -318,6 +318,14 @@ function parseDiffArgs(rest: readonly string[]): ParsedCommand {
     : { command: 'diff', fromDate: from, toDate: to };
 }
 
+/** A CFR part number, checked before any snapshot is opened. */
+function parseComparePart(raw: string): string {
+  if (!/^\d{1,3}$/.test(raw)) {
+    throw new CliError(`compare --part must be a CFR part number such as 4, got: ${raw}`);
+  }
+  return raw;
+}
+
 /** Parse `compare <from_snapshot> <to_snapshot> [--part P]`. */
 function parseCompareArgs(rest: readonly string[]): ParsedCommand {
   const paths: string[] = [];
@@ -331,13 +339,12 @@ function parseCompareArgs(rest: readonly string[]): ParsedCommand {
           '--part requires a CFR part number (e.g. `cfr-free compare a.sqlite b.sqlite --part 4`)',
         );
       }
-      part = value;
+      part = parseComparePart(value);
       index += 1;
       continue;
     }
     if (arg.startsWith('--part=')) {
-      part = arg.slice(7);
-      if (part === '') throw new CliError('--part requires a CFR part number');
+      part = parseComparePart(arg.slice(7));
       continue;
     }
     if (arg.startsWith('-')) throw new CliError(`unknown option for compare: ${arg}`);

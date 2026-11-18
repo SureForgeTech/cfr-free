@@ -1,6 +1,7 @@
 import type { Logger } from '../logger.js';
 import {
   compareSnapshots,
+  SNAPSHOT_CHANGE_CAP,
   type ChangeSummary,
   type SnapshotChange,
   type SnapshotComparison,
@@ -78,16 +79,18 @@ function formatChange(change: SnapshotChange): string[] {
  * stored revisions changed.
  */
 export function formatSnapshotComparison(comparison: SnapshotComparison): string {
+  const count = (value: number): string =>
+    comparison.truncated && value > 0 ? `at least ${String(value)}` : String(value);
   const lines: string[] = [
-    `${comparison.changed.length} changed, ${comparison.added.length} added, ` +
-      `${comparison.removed.length} removed between ${comparison.from.issueDate} and ` +
+    `${count(comparison.changed.length)} changed, ${count(comparison.added.length)} added, ` +
+      `${count(comparison.removed.length)} removed between ${comparison.from.issueDate} and ` +
       comparison.to.issueDate,
     `from: ${comparison.from.path}`,
     `to:   ${comparison.to.path}`,
   ];
   if (comparison.part !== null) lines.push(`part: ${comparison.part}`);
   if (comparison.truncated) {
-    lines.push('one or more category lists was cut at the 100-entry cap');
+    lines.push(`one or more category lists were cut at the ${SNAPSHOT_CHANGE_CAP}-entry cap`);
   }
   for (const [label, changes] of [
     ['changed', comparison.changed],

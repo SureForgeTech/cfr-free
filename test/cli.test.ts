@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -203,6 +203,12 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['compare', 'a', 'b', 'c'])).toThrow(/from-snapshot and a to-snapshot/);
     expect(() => parseArgs(['compare', 'a', 'b', '--json'])).toThrow(/unknown option for compare/);
     expect(() => parseArgs(['compare', 'a', 'b', '--part'])).toThrow(/--part requires/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--part', '4x'])).toThrow(
+      /--part must be a CFR part number/,
+    );
+    expect(() => parseArgs(['compare', 'a', 'b', '--part='])).toThrow(
+      /--part must be a CFR part number/,
+    );
   });
 });
 
@@ -322,10 +328,15 @@ describe('main', () => {
     const toPath = path.join(toTemp.dir, 'to.sqlite');
     fromTemp.store.backupTo(fromPath);
     toTemp.store.backupTo(toPath);
-    const { out, err, io } = makeIo({}, createTestLogger());
+    const liveIndexPath = path.join(fromTemp.dir, 'live-index.sqlite');
+    const { out, err, io } = makeIo(
+      { CFR_INDEX_PATH: liveIndexPath, CFR_AUTO_SYNC: '0' },
+      createTestLogger(),
+    );
     try {
       const code = await main(['compare', fromPath, toPath], io);
       expect(code).toBe(0);
+      expect(existsSync(liveIndexPath)).toBe(false);
       const printed = out.join('');
       expect(printed).toContain('1 changed, 1 added, 1 removed between 2026-01-01 and 2026-02-01');
       expect(printed).toContain('- 4.1 — Evaluation criteria.');
@@ -393,6 +404,26 @@ describe('main', () => {
     expect(code).toBe(2);
     expect(err.join('')).toContain('no snapshot at ');
     expect(err.join('')).toContain('cfr-free export');
+  });
+
+  it('maps same-file and non-index snapshot inputs to exit code 2', async () => {
+    const temp = openTempStore({ issueDate: '2026-01-01' });
+    const snapshotPath = path.join(temp.dir, 'snapshot.sqlite');
+    const foreignPath = path.join(temp.dir, 'foreign.sqlite');
+    temp.store.backupTo(snapshotPath);
+    writeFileSync(foreignPath, 'not a database');
+    const { err, io } = makeIo({ CFR_LOG_LEVEL: 'error' }, createTestLogger());
+    try {
+      const same = await main(['compare', snapshotPath, snapshotPath], io);
+      expect(same).toBe(2);
+      expect(err.join('')).toContain('same file');
+
+      const foreign = await main(['compare', foreignPath, snapshotPath], io);
+      expect(foreign).toBe(2);
+      expect(err.join('')).toContain('cannot open');
+    } finally {
+      temp.cleanup();
+    }
   });
 
   it('formats a snapshot comparison for terminal readers', () => {
@@ -490,7 +521,8 @@ describe('main', () => {
     };
     const printed = formatSnapshotComparison(comparison);
     expect(printed).toContain('part: 4');
-    expect(printed).toContain('one or more category lists was cut at the 100-entry cap');
+    expect(printed).toContain('0 changed, at least 1 added, at least 1 removed');
+    expect(printed).toContain('one or more category lists were cut at the 100-entry cap');
     expect(printed).toContain('from: (absent)');
     expect(printed).toContain('image content: true');
     expect(printed).toContain('summary (truncated):');
