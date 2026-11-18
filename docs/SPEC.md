@@ -16,7 +16,7 @@ A self-hosted **38 CFR data service ("Titan")** plus an **MCP server**, TypeScri
 Single npm package, one CLI (`cfr-free`) with subcommands (default: `mcp`):
 
 ```
-mcp  sync  diff  redline  historical  search  serve  export  help  version
+mcp  sync  diff  compare  redline  historical  search  serve  export  help  version
 ```
 
 Signatures and one-line purposes live in `USAGE` (`src/cli.ts`); `help`
@@ -45,7 +45,7 @@ src/
   logger.ts           stderr-only structured logging (stdout is JSON-RPC)
   process-utils.ts    idempotent shutdown handling shared by serve/mcp
   version.ts          package-version resolution seam
-  commands/           per-subcommand entrypoints (diff, export,
+  commands/           per-subcommand entrypoints (compare, diff, export,
                       historical, mcp, mcp-install, redline, search,
                       serve, sync, vibe, vibe-ui)
                       plus two internal helpers (ensure-index,
@@ -198,6 +198,8 @@ re-labelled: the upstream wording already labels them ("Note:",
 **Image content (P1-01):** some provisions publish their rating tables as `<img>` elements (15 in the 2026-10-16 document, across 9 provisions — 1.9, 4.71, 4.71a, 4.76a, 4.77, 4.85, 17.610, 45.605, 59.50). The parser cannot include image content offline and must never drop it silently: every `<img>` — inline in a paragraph, nested in a container, or a direct content child — is replaced IN PLACE by the explicit marker `[image content not included: <path>]` in BOTH the text and the markdown representation. Only a vetted relative eCFR graphics path (`/graphics/<file>`, safe charset, no traversal) is named; any other source (scheme-qualified, host-qualified, outside `/graphics/`, or missing) yields `[image content not included: unrecognized image source]` and is never echoed. Nothing is fetched, OCR'd, or transcribed: the service stays fully offline, and a matching section count never implies complete textual coverage — the sync report states how many provisions carry the marker (`meta.image_content_sections`).
 
 Sync is a single transaction: the title's slice is replaced (`DELETE FROM sections WHERE title = ?` — the whole table only when the whole index is rebuilt) and the new rows are bulk-inserted (FTS5 external-content triggers keep the index consistent). Sync is atomic — readers never see a half-built index (SQLite WAL mode).
+
+**Stored snapshot comparison.** `cfr-free compare <from_snapshot> <to_snapshot> [--part P]` is the CLI twin of the MCP `compare_snapshots` tool: it reads two stored cfr-free index files (typically `cfr-free export` copies) through the same read-only, strict-schema comparison path, prints the changed/added/removed provisions with their recorded dates, dated verification URLs and bounded text summaries, and never contacts eCFR.
 
 Policies: HTTP timeout 15 s, max response 50 MB, `User-Agent: cfr-free/<version>`, 2 retries (3 attempts) with 250 ms-per-attempt backoff on 5xx/429/timeouts only; no cross-process or persistent cache (cut — §10 row 11). The one reuse of an upstream document is the per-process, in-memory memo described in §5.
 
