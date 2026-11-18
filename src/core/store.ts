@@ -728,19 +728,61 @@ export class Store {
    * Atomically replace the entire index while running `baseline` INSIDE the
    * same IMMEDIATE transaction, BEFORE the wipe.
    *
-   * The baseline callback reads the OUTGOING index (previous issue date,
-   * previous text hashes) only after the write lock is held: a concurrent
-   * writer can no longer commit its own index between the snapshot and the
-   * rebuild, so the advisory change report always describes the exact state
-   * this call replaced (scout #3 / batch-5 R3). The callback's return value
-   * is handed back to the caller, and any meta it writes participates in the
-   * same COMMIT.
+   * Delegates to {@link replaceTitleWithBaseline}'s shared machinery with a
+   * whole-index scope: every row is wiped and reinserted, and the rows keep
+   * their own `section.title` stamps (or the {@link DEFAULT_TITLE} default).
    *
-   * Ordering: callback first, then DELETE → INSERT → meta upserts — the
-   * baseline must see pre-wipe rows, and everything it reads is pinned by
-   * BEGIN IMMEDIATE until COMMIT.
+   * @deprecated New write paths that serve a multi-title index should prefer
+   * {@link replaceTitleWithBaseline}, which preserves the other titles' rows
+   * and meta. Retained for single-title fixture seeds and the demo store.
    */
   replaceAllWithBaseline<T>(
+    sections: readonly RawSection[],
+    issueDate: string,
+    meta: Readonly<Record<string, string>>,
+    baseline: (store: Store) => T,
+  ): T {
+    return this.replaceScoped(null, sections, issueDate, meta, baseline);
+  }
+
+  /**
+   * Atomically replace ONE title's slice of the index while running
+   * `baseline` INSIDE the same IMMEDIATE transaction, BEFORE the wipe.
+   *
+   * The scope is exactly `sections WHERE title = ?`: rows, edges (citing_id
+   * cascades) and the title's own meta are replaced, while every other
+   * title's rows and meta are preserved untouched — a Title 32 sync can
+   * never wipe a Title 38 index. The inserted rows are stamped with `title`
+   * (NOT each section's own stamp: the caller names the authority this
+   * rebuild serves), and `title.<N>.issue_date` is upserted alongside the
+   * passed meta.
+   *
+   * The baseline callback reads the OUTGOING slice (previous per-title issue
+   * date, per-title text hashes) only after the write lock is held, exactly
+   * as {@link replaceAllWithBaseline} does for the whole index; its return
+   * value is handed back and any meta it writes rides the same COMMIT.
+   */
+  replaceTitleWithBaseline<T>(
+    title: number,
+    sections: readonly RawSection[],
+    issueDate: string,
+    meta: Readonly<Record<string, string>>,
+    baseline: (store: Store) => T,
+  ): T {
+    return this.replaceScoped(title, sections, issueDate, meta, baseline);
+  }
+
+  /**
+   * The shared rebuild transaction behind both public replacement methods.
+   *
+   * `scope` is `null` for the whole index ({@link replaceAllWithBaseline})
+   * or one title number ({@link replaceTitleWithBaseline}). Ordering:
+   * callback first, then DELETE → INSERT → meta upserts — the baseline must
+   * see pre-wipe rows, and everything it reads is pinned by BEGIN IMMEDIATE
+   * until COMMIT.
+   */
+  private replaceScoped<T>(
+    scope: number | null,
     sections: readonly RawSection[],
     issueDate: string,
     meta: Readonly<Record<string, string>>,
@@ -749,13 +791,17 @@ export class Store {
     let result!: T;
     this.transaction(() => {
       result = baseline(this);
-      // The sections wipe also clears every edge: citing_id cascades
-      // (PRAGMA foreign_keys is pinned ON in open()).
-      this.db.exec('DELETE FROM sections');
+      // The scoped wipe clears only this title's rows; their edges cascade
+      // with them (PRAGMA foreign_keys is pinned ON in open()).
+      if (scope === null) {
+        this.db.exec('DELETE FROM sections');
+      } else {
+        this.stmt('DELETE FROM sections WHERE title = ?').run(scope);
+      }
       const insert = this.stmt(INSERT_SECTION_SQL);
       const insertReference = this.stmt(INSERT_SECTION_REFERENCE_SQL);
       for (const section of sections) {
-        const title = section.title ?? DEFAULT_TITLE;
+        const title = scope ?? section.title ?? DEFAULT_TITLE;
         const { lastInsertRowid } = insert.run(
           title,
           section.citation,
@@ -782,11 +828,17 @@ export class Store {
       }
       const upsert = this.stmt(UPSERT_META_SQL);
       for (const [key, value] of Object.entries(meta)) upsert.run(key, value);
-      // Per-title issue dates alongside the legacy Title-38 `issue_date` key
-      // (meta keys `title.<N>.issue_date`); legacy readers keep working until
-      // the wire PR moves them onto the per-title keys.
-      for (const title of new Set(sections.map((section) => section.title ?? DEFAULT_TITLE))) {
-        upsert.run(`title.${title}.issue_date`, issueDate);
+      if (scope !== null) {
+        // The scoped rebuild records its own authority's issue date; the
+        // other titles' meta keys are left exactly as they were.
+        upsert.run(`title.${scope}.issue_date`, issueDate);
+      } else {
+        // Per-title issue dates alongside the legacy Title-38 `issue_date` key
+        // (meta keys `title.<N>.issue_date`); legacy readers keep working until
+        // the wire PR moves them onto the per-title keys.
+        for (const title of new Set(sections.map((section) => section.title ?? DEFAULT_TITLE))) {
+          upsert.run(`title.${title}.issue_date`, issueDate);
+        }
       }
     });
     return result;

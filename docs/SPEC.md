@@ -90,9 +90,11 @@ test/                 vitest unit + integration (mocked fetch, temp SQLite)
 
 Endpoints (base `https://www.ecfr.gov`, fixed origin — no SSRF surface):
 
-1. `GET /api/versioner/v1/titles.json` → Title 38 `up_to_date_as_of` (fallback `latest_issue_date`). eCFR rejects dates past the issue date, so this is resolved every sync.
-2. `GET /api/versioner/v1/structure/{date}/title-38.json` (~124 KB) → browse tree, stored in `meta`.
-3. `GET /api/versioner/v1/full/{date}/title-38.xml` (~2 MB gzip'd, verified: 2953 SECTION + 17 APPENDIX DIVs, exact match with structure JSON) → parsed in one pass.
+1. `GET /api/versioner/v1/titles.json` → each enabled title's `up_to_date_as_of` (fallback `latest_issue_date`). eCFR rejects dates past the issue date, so this is resolved every sync.
+2. `GET /api/versioner/v1/structure/{date}/title-{N}.json` (~124 KB for Title 38) → browse tree, stored in `meta`.
+3. `GET /api/versioner/v1/full/{date}/title-{N}.xml` (~2 MB gzip'd for Title 38, verified: 2953 SECTION + 17 APPENDIX DIVs, exact match with structure JSON) → parsed in one pass.
+
+**Which titles a sync covers.** `CFR_TITLES` names the enabled titles (default `38`); a sync resolves and rebuilds each of them SEQUENTIALLY, Title 38 first and then the rest ascending, so a failure in another title never costs the reader their Title 38 index. Each title's rows are written under its own authority — the store keys rows by `(title, citation)`, and a title-scoped rebuild replaces only that title's slice, so one title's sync never wipes another's. Per-title metadata (`title.<N>.issue_date`, `title.<N>.structure_json`, `title.<N>.corpus_hash`, `title.<N>.last_changes`, …) describes that title alone; Title 38 additionally keeps the legacy global keys (`issue_date`, `structure_json`, `corpus_hash`, `last_changes`) the existing read surfaces use. The change report for a title is computed against THAT title's rows only — a sibling title is never reported as added or removed. Every read surface still defaults to Title 38; another title's rows are stored but not yet served.
 
 Parse rule: walk `<DIVn>` nodes by their `TYPE` attribute (`TITLE|CHAPTER|PART|SUBPART|SUBJGRP|SECTION|APPENDIX`), maintaining an identifier stack → each section gets `path`, `part`, `subpart` columns. Headings from `<HEAD>` (strip `§ 4.125 ` prefix). Sanity check: parsed count vs. structure count; hard-fail on 0, warn on mismatch.
 
