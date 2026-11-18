@@ -9,7 +9,7 @@ A self-hosted **38 CFR data service ("Titan")** plus an **MCP server**, TypeScri
 - Zero-infrastructure runtime: Node ≥ 22.13 built-ins only (`node:sqlite`, `node:http`).
 - Local gates green: dependency audit clean, risky patterns lint-blocked, strict TS, high test coverage, low complexity.
 
-**Non-goals:** titles other than 38 (design keeps `TITLE` a constant), auth/multi-tenant HTTP, vector/semantic search, live write-back to eCFR.
+**Non-goals:** serving a title other than 38 (the STORE may hold several — `CFR_TITLES` names them — but every read surface still answers for Title 38; title-scoped serving is the next packet), auth/multi-tenant HTTP, vector/semantic search, live write-back to eCFR.
 
 ## 2. Architecture
 
@@ -197,7 +197,7 @@ re-labelled: the upstream wording already labels them ("Note:",
 
 **Image content (P1-01):** some provisions publish their rating tables as `<img>` elements (15 in the 2026-10-16 document, across 9 provisions — 1.9, 4.71, 4.71a, 4.76a, 4.77, 4.85, 17.610, 45.605, 59.50). The parser cannot include image content offline and must never drop it silently: every `<img>` — inline in a paragraph, nested in a container, or a direct content child — is replaced IN PLACE by the explicit marker `[image content not included: <path>]` in BOTH the text and the markdown representation. Only a vetted relative eCFR graphics path (`/graphics/<file>`, safe charset, no traversal) is named; any other source (scheme-qualified, host-qualified, outside `/graphics/`, or missing) yields `[image content not included: unrecognized image source]` and is never echoed. Nothing is fetched, OCR'd, or transcribed: the service stays fully offline, and a matching section count never implies complete textual coverage — the sync report states how many provisions carry the marker (`meta.image_content_sections`).
 
-Sync is a single transaction: `DELETE FROM sections` + bulk insert (FTS5 external-content triggers keep the index consistent). Sync is atomic — readers never see a half-built index (SQLite WAL mode).
+Sync is a single transaction: the title's slice is replaced (`DELETE FROM sections WHERE title = ?` — the whole table only when the whole index is rebuilt) and the new rows are bulk-inserted (FTS5 external-content triggers keep the index consistent). Sync is atomic — readers never see a half-built index (SQLite WAL mode).
 
 Policies: HTTP timeout 15 s, max response 50 MB, `User-Agent: cfr-free/<version>`, 2 retries (3 attempts) with 250 ms-per-attempt backoff on 5xx/429/timeouts only; no cross-process or persistent cache (cut — §10 row 11). The one reuse of an upstream document is the per-process, in-memory memo described in §5.
 

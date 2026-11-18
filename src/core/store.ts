@@ -76,6 +76,17 @@ export interface SearchQuery {
   readonly part?: string | undefined;
   readonly kind?: SectionKind | undefined;
   readonly chapter?: string | undefined;
+  /**
+   * The CFR title the search runs in (default {@link DEFAULT_TITLE}).
+   *
+   * The search is scoped to ONE authority: the store holds every enabled
+   * title's rows, and a citation may exist in more than one of them. An
+   * unscoped search would mix authorities in one result list and label every
+   * hit with the serving title's display form — so the scope is bound here
+   * and carried through the candidate count, the AND tier and the ranked
+   * rows alike.
+   */
+  readonly title?: number | undefined;
 }
 
 export interface SearchOutcome {
@@ -265,8 +276,8 @@ const SCORE_EXPR = 'bm25(sections_fts, 10.0, 5.0, 1.0) AS score';
  * CTE precedes the main SELECT in the statement text.
  */
 const AND_TIER_CTE = `
-WITH and_hits(citation) AS (
-  SELECT s.citation
+WITH and_hits(rowid) AS (
+  SELECT s.id
   FROM sections_fts
   JOIN sections s ON s.id = sections_fts.rowid
   WHERE sections_fts MATCH ?
@@ -277,7 +288,7 @@ WITH and_hits(citation) AS (
  * when it matches only some. Sorted DESC, it puts the rows that answered
  * the whole question ahead of the rows that answered part of it.
  */
-const AND_TIER_KEY = '(CASE WHEN a.citation IS NOT NULL THEN 1 ELSE 0 END) DESC';
+const AND_TIER_KEY = '(CASE WHEN a.rowid IS NOT NULL THEN 1 ELSE 0 END) DESC';
 
 /**
  * The ranked-search statement.
@@ -294,7 +305,7 @@ SELECT s.citation, s.heading, s.part, s.path, s.issue_date AS issue_date, ${SNIP
        ${SCORE_EXPR}
 FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
-LEFT JOIN and_hits a ON a.citation = s.citation
+LEFT JOIN and_hits a ON a.rowid = s.id
 WHERE sections_fts MATCH ?${where}
 ORDER BY ${orderBy}score, s.citation
 LIMIT ? OFFSET ?`;
@@ -326,17 +337,23 @@ function presentFilters(query: SearchQuery): SearchFilter[] {
   return filters;
 }
 
-/** ` AND s.x = ? …` WHERE tail for the filters; values bind separately. */
+/**
+ * The WHERE tail for a search: the title scope first, then the optional
+ * filters, each a bound value.
+ *
+ * The TITLE SCOPE is part of the tail rather than a separate clause so the
+ * candidate count and the ranked rows cannot drift apart: both build their
+ * tail here, and a query that forgot the scope would have to forget it in
+ * one place only. `s.title = ?` is a fixed column name with a bound value,
+ * so the title never reaches the SQL text.
+ */
 function filterClause(filters: readonly SearchFilter[]): string {
-  return filters.map(([name]) => ` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`).join('');
+  const scope = ' AND s.title = ?';
+  const tail = filters.map(([name]) => ` AND ${SEARCH_FILTER_COLUMNS[name]} = ?`).join('');
+  return scope + tail;
 }
 
-const COUNT_MATCHES_SQL = `
-SELECT count(*) AS n
-FROM sections_fts
-WHERE sections_fts MATCH ?`;
-
-const COUNT_MATCHES_FILTERED_SQL = (where: string): string => `
+const COUNT_MATCHES_SQL = (where: string): string => `
 SELECT count(*) AS n
 FROM sections_fts
 JOIN sections s ON s.id = sections_fts.rowid
@@ -844,7 +861,28 @@ export class Store {
     return result;
   }
 
-  countSections(): number {
+  /**
+   * How many rows one title's slice holds (default {@link DEFAULT_TITLE}).
+   *
+   * The count is title-scoped because the drift check compares it with the
+   * structure expectations recorded for THAT title: an all-titles count
+   * against one title's expectations reports a healthy multi-title index as
+   * degraded.
+   */
+  countSections(title: number = DEFAULT_TITLE): number {
+    const row = this.stmt('SELECT count(*) AS n FROM sections WHERE title = ?').get(title) as
+      Record<string, unknown> | undefined;
+    return row ? Number(row['n'] ?? 0) : 0;
+  }
+
+  /**
+   * How many rows the whole store holds, every title included.
+   *
+   * The export path uses this: a snapshot copy carries EVERY title's rows,
+   * so the count it reports must be the count of what it wrote, not one
+   * title's slice.
+   */
+  countAllSections(): number {
     const row = this.stmt('SELECT count(*) AS n FROM sections').get() as
       Record<string, unknown> | undefined;
     return row ? Number(row['n'] ?? 0) : 0;
@@ -860,6 +898,9 @@ export class Store {
    * writers serialize immediately. Unlike `captureTextHashes` (folded into
    * a hash map, so it batches to bound memory), callers here need the text
    * itself, so the rows are returned in one array by design.
+   *
+   * The rows carry their own `title`, so a multi-title store's export says
+   * which authority every provision belongs to instead of blending them.
    */
   allSections(): SectionRow[] {
     const rows = this.stmt(SELECT_ALL_SECTIONS_SQL).all() as Record<string, unknown>[];
@@ -1011,11 +1052,12 @@ export class Store {
     return row ? toSectionRow(row) : null;
   }
 
-  private countMatches(ftsQuery: string, filters: readonly SearchFilter[]): number {
-    const sql =
-      filters.length === 0 ? COUNT_MATCHES_SQL : COUNT_MATCHES_FILTERED_SQL(filterClause(filters));
-    const row = this.stmt(sql).get(ftsQuery, ...filters.map(([, value]) => value)) as
-      Record<string, unknown> | undefined;
+  private countMatches(ftsQuery: string, filters: readonly SearchFilter[], title: number): number {
+    const row = this.stmt(COUNT_MATCHES_SQL(filterClause(filters))).get(
+      ftsQuery,
+      title,
+      ...filters.map(([, value]) => value),
+    ) as Record<string, unknown> | undefined;
     return row ? Number(row['n'] ?? 0) : 0;
   }
 
@@ -1047,6 +1089,7 @@ export class Store {
     const perPage = Math.max(1, query.perPage);
     const offset = (Math.max(1, query.page) - 1) * perPage;
     const filters = presentFilters(query);
+    const title = query.title ?? DEFAULT_TITLE;
 
     // ONE parse of the query feeds both tiers: the candidate query (OR) and
     // the AND-tier membership query (AND) are the same fragments joined
@@ -1060,7 +1103,7 @@ export class Store {
     }
     const { or: orQuery, and: andQuery } = queries;
 
-    const total = this.countMatches(orQuery, filters);
+    const total = this.countMatches(orQuery, filters, title);
     if (total === 0) {
       return { hits: [], total: 0, page: query.page, perPage, matchMode: 'or' };
     }
@@ -1074,6 +1117,7 @@ export class Store {
     const rows = this.stmt(sql).all(
       andQuery,
       orQuery,
+      title,
       ...filters.map(([, value]) => value),
       ...key.params,
       perPage,
@@ -1118,19 +1162,31 @@ export class Store {
     return row !== undefined;
   }
 
-  /** Every part present in the index, with per-kind counts. */
-  listParts(): { part: string; sections: number; appendices: number }[] {
+  /**
+   * Every part present in ONE title's slice of the index, with per-kind
+   * counts.
+   *
+   * The counts are scoped to a title (default {@link DEFAULT_TITLE}): the
+   * store holds every enabled title's rows, and a part number can appear
+   * in more than one of them. A combined count would report a Title 38
+   * part's sections under Title 38's structure tree.
+   */
+  listParts(title: number = DEFAULT_TITLE): {
+    part: string;
+    sections: number;
+    appendices: number;
+  }[] {
     const rows = this.stmt(
       `
       SELECT part,
              SUM(kind = 'section') AS sections,
              SUM(kind = 'appendix') AS appendices
       FROM sections
-      WHERE part IS NOT NULL AND part != ''
+      WHERE title = ? AND part IS NOT NULL AND part != ''
       GROUP BY part
       ORDER BY CAST(part AS INTEGER), part
     `,
-    ).all() as Record<string, unknown>[];
+    ).all(title) as Record<string, unknown>[];
     return rows.map((row) => ({
       part: String(row['part']),
       sections: Number(row['sections'] ?? 0),

@@ -71,12 +71,17 @@ export interface EnsureIndexDeps {
  * one shared eCFR client. A failure in any title propagates to the caller;
  * the earlier titles' commits are already durable, and the failure names
  * the title through the structured log's fields.
+ *
+ * Exported so the background refresh schedulers (`serve`, `mcp`) refresh the
+ * same set of titles the startup sync built — a scheduler that refreshed
+ * only Title 38 would silently drop the other configured titles from a
+ * periodic refresh.
  */
-async function syncAllTitles(
+export async function syncAllTitles(
   store: Store,
   config: AppConfig,
   logger: Logger,
-  deps: EnsureIndexDeps,
+  deps: EnsureIndexDeps = {},
 ): Promise<void> {
   const createEcfr = deps.createEcfr ?? createEcfrApi;
   const ecfr = createEcfr();

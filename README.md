@@ -540,9 +540,9 @@ eCFR API ──sync──▶ SQLite (sections + FTS5 + structure meta)
 - `docs/SPEC.md` — the design authority; `docs/research/delivery-log.md` —
   the review dispositions and the closed delivery record
 
-Sync is atomic: the whole index is replaced inside one `BEGIN IMMEDIATE`
-transaction under WAL, so concurrent readers never see a partial build, and
-an interrupted sync simply rolls back.
+Sync is atomic: the title's slice of the index is replaced inside one
+`BEGIN IMMEDIATE` transaction under WAL, so concurrent readers never see a
+partial build, and an interrupted sync simply rolls back.
 
 ## Data source & attribution
 

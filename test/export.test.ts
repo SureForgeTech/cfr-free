@@ -13,6 +13,7 @@ import { createTestLogger, makeSection, openTempStore } from './helpers.js';
 const JSONL_FIELDS = [
   'citation',
   'kind',
+  'title',
   'heading',
   'chapter',
   'subchapter',
