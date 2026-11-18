@@ -3,11 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { commandUsage, main, parseArgs } from '../src/cli.js';
 import { formatVerifyReport, runVerifyCommand } from '../src/commands/verify.js';
 import { corpusHash } from '../src/core/changes.js';
 import { ServiceError } from '../src/core/errors.js';
+import { Store, StoreError } from '../src/core/store.js';
 import { loadConfig } from '../src/config.js';
 import { EXIT } from '../src/exit-codes.js';
 import { createTestLogger, FIXTURE_SECTIONS, makeSection, openTempStore } from './helpers.js';
@@ -163,6 +164,29 @@ describe('runVerifyCommand', () => {
     }
   });
 
+  it('reports a stale Title 38 receipt when only another title has rows', () => {
+    const temp = openTempStore({
+      sections: [makeSection({ title: 32, citation: '70.1' })],
+    });
+    try {
+      const recordedCorpusHash = corpusHash(temp.store.snapshotTextHashes(32));
+      const emptyCorpusHash = corpusHash(new Map());
+      temp.store.setMeta('title.38.corpus_hash', recordedCorpusHash);
+      temp.store.setMeta('corpus_hash', emptyCorpusHash);
+
+      const config = loadConfig({ CFR_INDEX_PATH: temp.indexPath });
+      expect(runVerifyCommand(config, createTestLogger())).toMatchObject({
+        sections: 0,
+        appendices: 0,
+        receipt: 'mismatch',
+        recordedCorpusHash,
+        recomputedCorpusHash: emptyCorpusHash,
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it('falls back to the legacy issue_date key when the per-title key is absent', () => {
     const temp = openTempStore();
     try {
@@ -245,6 +269,32 @@ describe('runVerifyCommand', () => {
       expect(positional.message).not.toMatch(/SQLITE|database disk/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a lock during the snapshot read as invalid input and closes the reader', () => {
+    const temp = openTempStore();
+    const logger = createTestLogger();
+    const lock = new StoreError('index is locked by another cfr-free process');
+    const count = vi.spyOn(Store.prototype, 'countProvisions').mockImplementationOnce(() => {
+      throw lock;
+    });
+    const close = vi.spyOn(Store.prototype, 'close');
+    try {
+      const config = loadConfig({ CFR_INDEX_PATH: temp.indexPath });
+      const error = captureServiceError(() => runVerifyCommand(config, logger));
+      expect(error.code).toBe('invalid_input');
+      expect(error.message).toBe('cannot read the file as a cfr-free index');
+      expect(logger.records).toContainEqual({
+        level: 'warn',
+        message: 'verification could not read the file',
+        fields: { path: temp.indexPath, detail: lock.message },
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+      count.mockRestore();
+      temp.cleanup();
     }
   });
 
