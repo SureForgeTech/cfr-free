@@ -49,6 +49,9 @@ export function isLoopbackHost(host: string): boolean {
 const DEFAULT_MAX_AGE_DAYS = 7;
 const DEFAULT_PORT = 8787;
 
+/** The CFR title this service is built around; every read surface defaults to it. */
+export const DEFAULT_CFR_TITLE = 38;
+
 /** String-only schema; numeric fields are converted and bounds-checked below. */
 const envSchema = z.object({
   CFR_INDEX_PATH: z.string().min(1).optional(),
@@ -120,6 +123,22 @@ function parseTitles(raw: string | undefined): readonly number[] {
     });
   if (titles.length === 0) return [38];
   return [...new Set(titles)].sort((a, b) => a - b);
+}
+
+/**
+ * The order a multi-title sync runs in: Title 38 first, then the remaining
+ * titles ascending.
+ *
+ * The CONFIGURED list is sorted ascending (that is the config's own
+ * contract), but the sync order is a different thing and is stated in both
+ * this file's doc comment and the multi-title design: the product's mission
+ * title leads, so a failure in another title never costs the reader their
+ * Title 38 index. The order is therefore derived here, once, rather than
+ * left to each caller's loop.
+ */
+export function titleSyncOrder(titles: readonly number[]): readonly number[] {
+  const rest = titles.filter((title) => title !== DEFAULT_CFR_TITLE).sort((a, b) => a - b);
+  return titles.includes(DEFAULT_CFR_TITLE) ? [DEFAULT_CFR_TITLE, ...rest] : rest;
 }
 
 function parseBoundedInt(

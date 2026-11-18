@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import {
   USAGE,
 } from '../src/cli.js';
 import { HttpError } from '../src/core/http-client.js';
+import { formatSnapshotComparison } from '../src/commands/compare.js';
 import { formatIssueDiff } from '../src/commands/diff.js';
 import { POINT_IN_TIME_NOTICE } from '../src/core/point-in-time.js';
 import { formatSearchResults } from '../src/commands/search.js';
@@ -22,7 +23,7 @@ import { EXIT } from '../src/exit-codes.js';
 import type { FetchLike } from '../src/core/http-client.js';
 import { VERSION } from '../src/version.js';
 import type { Logger } from '../src/logger.js';
-import { createTestLogger, FIXTURE_STRUCTURE, openTempStore } from './helpers.js';
+import { createTestLogger, FIXTURE_STRUCTURE, makeSection, openTempStore } from './helpers.js';
 
 function makeIo(
   env: NodeJS.ProcessEnv = {},
@@ -175,6 +176,40 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['diff', '--flag'])).toThrow(CliError);
     expect(() => parseArgs(['diff', '2026-01-01', '-v'])).toThrow(CliError);
   });
+
+  it('parses compare with two snapshot paths and an optional part', () => {
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+    });
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite', '--part', '4'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+      part: '4',
+    });
+    expect(parseArgs(['compare', 'old.sqlite', 'new.sqlite', '--part=17'])).toEqual({
+      command: 'compare',
+      fromPath: 'old.sqlite',
+      toPath: 'new.sqlite',
+      part: '17',
+    });
+  });
+
+  it('rejects compare without two snapshots, with extra args, or with unknown options', () => {
+    expect(() => parseArgs(['compare'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'old.sqlite'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'a', 'b', 'c'])).toThrow(/from-snapshot and a to-snapshot/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--json'])).toThrow(/unknown option for compare/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--part'])).toThrow(/--part requires/);
+    expect(() => parseArgs(['compare', 'a', 'b', '--part', '4x'])).toThrow(
+      /--part must be a CFR part number/,
+    );
+    expect(() => parseArgs(['compare', 'a', 'b', '--part='])).toThrow(
+      /--part must be a CFR part number/,
+    );
+  });
 });
 
 describe('main', () => {
@@ -184,6 +219,7 @@ describe('main', () => {
     expect(code).toBe(0);
     expect(out.join('')).toContain('Usage:');
     expect(out.join('')).toContain('cfr-free diff <from> [to]');
+    expect(out.join('')).toContain('cfr-free compare <from_snapshot> <to_snapshot>');
     expect(out.join('')).toContain('cfr-free export <path> [jsonl|md]');
     expect(err.join('')).toBe('');
   });
@@ -262,6 +298,237 @@ describe('main', () => {
     expect(global).toContain('cfr-free diff <from> [to]');
     // The entry's continuation line belongs to the entry.
     expect(global).toContain("(to defaults to the index's issue date)");
+    expect(commandUsage('compare')).toContain('cfr-free compare <from_snapshot> <to_snapshot>');
+  });
+
+  it('compares two stored snapshots offline through the CLI', async () => {
+    const fromTemp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.1',
+          heading: 'Evaluation criteria.',
+          text: 'Shared line.\nOld criteria.',
+        }),
+        makeSection({ citation: '4.2', heading: 'Removed section.', text: 'Removed body.' }),
+      ],
+      issueDate: '2026-01-01',
+    });
+    const toTemp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.1',
+          heading: 'Evaluation criteria.',
+          text: 'Shared line.\nNew criteria.',
+        }),
+        makeSection({ citation: '4.4', heading: 'Added section.', text: 'Added body.' }),
+      ],
+      issueDate: '2026-02-01',
+    });
+    const fromPath = path.join(fromTemp.dir, 'from.sqlite');
+    const toPath = path.join(toTemp.dir, 'to.sqlite');
+    fromTemp.store.backupTo(fromPath);
+    toTemp.store.backupTo(toPath);
+    const liveIndexPath = path.join(fromTemp.dir, 'live-index.sqlite');
+    const { out, err, io } = makeIo(
+      { CFR_INDEX_PATH: liveIndexPath, CFR_AUTO_SYNC: '0' },
+      createTestLogger(),
+    );
+    try {
+      const code = await main(['compare', fromPath, toPath], io);
+      expect(code).toBe(0);
+      expect(existsSync(liveIndexPath)).toBe(false);
+      const printed = out.join('');
+      expect(printed).toContain('1 changed, 1 added, 1 removed between 2026-01-01 and 2026-02-01');
+      expect(printed).toContain('- 4.1 — Evaluation criteria.');
+      expect(printed).toContain('- 4.4 — Added section.');
+      expect(printed).toContain('- 4.2 — Removed section.');
+      expect(printed).toContain(`https://www.ecfr.gov/on/2026-01-01/title-38/section-4.1`);
+      expect(printed).toContain(`https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1`);
+      expect(printed).toContain('- from line 2: Old criteria.');
+      expect(printed).toContain('+ to line 2: New criteria.');
+      expect(err.join('')).toBe('');
+    } finally {
+      fromTemp.cleanup();
+      toTemp.cleanup();
+    }
+  });
+
+  it('applies the CLI compare --part filter', async () => {
+    const fromTemp = openTempStore({
+      sections: [
+        makeSection({ citation: '4.1', text: 'Old part 4.' }),
+        makeSection({
+          citation: '17.1',
+          part: '17',
+          subpart: null,
+          path: '/title:38/chapter:I/part:17',
+          text: 'Old part 17.',
+        }),
+      ],
+      issueDate: '2026-01-01',
+    });
+    const toTemp = openTempStore({
+      sections: [
+        makeSection({ citation: '4.1', text: 'New part 4.' }),
+        makeSection({
+          citation: '17.1',
+          part: '17',
+          subpart: null,
+          path: '/title:38/chapter:I/part:17',
+          text: 'New part 17.',
+        }),
+      ],
+      issueDate: '2026-02-01',
+    });
+    const fromPath = path.join(fromTemp.dir, 'from.sqlite');
+    const toPath = path.join(toTemp.dir, 'to.sqlite');
+    fromTemp.store.backupTo(fromPath);
+    toTemp.store.backupTo(toPath);
+    const { out, io } = makeIo({}, createTestLogger());
+    try {
+      const code = await main(['compare', fromPath, toPath, '--part', '17'], io);
+      expect(code).toBe(0);
+      const printed = out.join('');
+      expect(printed).toContain('part: 17');
+      expect(printed).toContain('- 17.1 —');
+      expect(printed).not.toContain('- 4.1 —');
+    } finally {
+      fromTemp.cleanup();
+      toTemp.cleanup();
+    }
+  });
+
+  it('maps a missing snapshot to exit code 2 with actionable guidance', async () => {
+    const { err, io } = makeIo({ CFR_LOG_LEVEL: 'error' }, createTestLogger());
+    const code = await main(['compare', 'missing.sqlite', 'also-missing.sqlite'], io);
+    expect(code).toBe(2);
+    expect(err.join('')).toContain('no snapshot at ');
+    expect(err.join('')).toContain('cfr-free export');
+  });
+
+  it('maps same-file and non-index snapshot inputs to exit code 2', async () => {
+    const temp = openTempStore({ issueDate: '2026-01-01' });
+    const snapshotPath = path.join(temp.dir, 'snapshot.sqlite');
+    const foreignPath = path.join(temp.dir, 'foreign.sqlite');
+    temp.store.backupTo(snapshotPath);
+    writeFileSync(foreignPath, 'not a database');
+    const { err, io } = makeIo({ CFR_LOG_LEVEL: 'error' }, createTestLogger());
+    try {
+      const same = await main(['compare', snapshotPath, snapshotPath], io);
+      expect(same).toBe(2);
+      expect(err.join('')).toContain('same file');
+
+      const foreign = await main(['compare', foreignPath, snapshotPath], io);
+      expect(foreign).toBe(2);
+      expect(err.join('')).toContain('cannot open');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('formats a snapshot comparison for terminal readers', () => {
+    const comparison = {
+      from: { path: '/snapshots/old.sqlite', issueDate: '2026-01-01' },
+      to: { path: '/snapshots/new.sqlite', issueDate: '2026-02-01' },
+      part: null,
+      added: [],
+      removed: [],
+      changed: [
+        {
+          citation: '4.1',
+          kind: 'section' as const,
+          heading: 'Evaluation criteria.',
+          headingChanged: true,
+          previousHeading: 'Old criteria.',
+          chapter: 'I',
+          part: '4',
+          subpart: 'B',
+          path: '/title:38/chapter:I/part:4/subpart:B',
+          fromIssueDate: '2026-01-01',
+          toIssueDate: '2026-02-01',
+          fromSourceUrl: 'https://www.ecfr.gov/on/2026-01-01/title-38/section-4.1',
+          toSourceUrl: 'https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1',
+          imageContent: false,
+          summary: {
+            truncated: false,
+            hunks: [
+              { fromLine: 1, toLine: null, type: 'del' as const, text: 'Old criteria.' },
+              { fromLine: null, toLine: 1, type: 'add' as const, text: 'New criteria.' },
+            ],
+          },
+        },
+      ],
+      truncated: false,
+    };
+    const printed = formatSnapshotComparison(comparison);
+    expect(printed).toContain('1 changed, 0 added, 0 removed');
+    expect(printed).toContain('previously: Old criteria.');
+    expect(printed).toContain('chapter I / part 4 / subpart B');
+    expect(printed).toContain('- from line 1: Old criteria.');
+    expect(printed).toContain('+ to line 1: New criteria.');
+  });
+
+  it('formats snapshot comparison edge cases for terminal readers', () => {
+    const change = (overrides: Record<string, unknown>) => ({
+      citation: '4.1',
+      kind: 'section' as const,
+      heading: 'Evaluation criteria.',
+      headingChanged: false,
+      previousHeading: null,
+      chapter: null,
+      part: null,
+      subpart: null,
+      path: '/title:38/chapter:I/part:4',
+      fromIssueDate: '2026-01-01',
+      toIssueDate: '2026-02-01',
+      fromSourceUrl: null,
+      toSourceUrl: 'https://www.ecfr.gov/on/2026-02-01/title-38/section-4.1',
+      imageContent: false,
+      summary: { truncated: false, hunks: [] },
+      ...overrides,
+    });
+    const comparison = {
+      from: { path: '/snapshots/old.sqlite', issueDate: '2026-01-01' },
+      to: { path: '/snapshots/new.sqlite', issueDate: '2026-02-01' },
+      part: '4',
+      added: [
+        change({
+          citation: '4.9',
+          imageContent: true,
+          summary: { truncated: true, hunks: [] },
+        }),
+      ],
+      removed: [
+        change({
+          citation: '4.8',
+          toSourceUrl: null,
+          fromSourceUrl: 'https://www.ecfr.gov/on/2026-01-01/title-38/section-4.8',
+          summary: {
+            truncated: false,
+            hunks: [
+              {
+                fromLine: 3,
+                toLine: 3,
+                type: 'same' as const,
+                text: 'line one\nline two',
+              },
+            ],
+          },
+        }),
+      ],
+      changed: [],
+      truncated: true,
+    };
+    const printed = formatSnapshotComparison(comparison);
+    expect(printed).toContain('part: 4');
+    expect(printed).toContain('0 changed, at least 1 added, at least 1 removed');
+    expect(printed).toContain('one or more category lists were cut at the 100-entry cap');
+    expect(printed).toContain('from: (absent)');
+    expect(printed).toContain('image content: true');
+    expect(printed).toContain('summary (truncated):');
+    expect(printed).toContain('(no text lines differ)');
+    expect(printed).toContain('to:   (absent)');
+    expect(printed).toContain('    - from line 3 → to line 3: line one line two');
   });
 
   it('prints the package version', async () => {
@@ -486,6 +753,66 @@ function makeSyncFetch(getXml: () => string): FetchLike {
   };
 }
 
+const TITLE_32_SYNC_XML = `<ECFR><DIV1 N="32" TYPE="TITLE"><HEAD>Title 32</HEAD><DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD><DIV5 N="70" TYPE="PART"><HEAD>Part 70</HEAD><DIV8 N="70.3" TYPE="SECTION"><HEAD>§ 70.3 Definitions.</HEAD><P>National defense terms.</P></DIV8></DIV5></DIV3></ECFR>`;
+
+const TITLE_32_SYNC_STRUCTURE = {
+  type: 'title',
+  identifier: '32',
+  label: 'Title 32—National Defense',
+  children: [
+    {
+      type: 'chapter',
+      identifier: 'I',
+      label: 'Chapter I',
+      children: [
+        {
+          type: 'part',
+          identifier: '70',
+          label: 'Part 70',
+          children: [{ type: 'section', identifier: '70.3', label: '§ 70.3', children: [] }],
+        },
+      ],
+    },
+  ],
+};
+
+/** A stub eCFR serving BOTH titles: the schedule lists 38 and 32, and the
+ *  document routes answer per `title-N` path segment. */
+function makeMultiTitleSyncFetch(): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/titles.json'))
+      return Response.json({
+        titles: [
+          {
+            number: 32,
+            name: 'Title 32',
+            latest_issue_date: '2026-11-06',
+            up_to_date_as_of: '2026-11-06',
+            latest_amended_on: '2026-11-06',
+          },
+          {
+            number: 38,
+            name: 'Title 38',
+            latest_issue_date: '2026-08-27',
+            up_to_date_as_of: '2026-10-09',
+            latest_amended_on: '2026-08-27',
+          },
+        ],
+      });
+    if (url.pathname.includes('/structure/'))
+      return Response.json(
+        url.pathname.includes('title-32') ? TITLE_32_SYNC_STRUCTURE : FIXTURE_STRUCTURE,
+      );
+    if (url.pathname.includes('/full/'))
+      return new Response(url.pathname.includes('title-32') ? TITLE_32_SYNC_XML : SYNC_XML_V1, {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    return new Response('not found', { status: 404 });
+  };
+}
+
 describe('exitCodeFor', () => {
   it('maps a usage mistake to 2 and a deployment fault to 1', () => {
     // A `ServiceError` carrying `invalid_input` is the READER's mistake, so
@@ -502,7 +829,44 @@ describe('exitCodeFor', () => {
 });
 
 describe('main: sync output', () => {
-  it('reports the provision-level change counts', async () => {
+  it('syncs every configured title and prints one line per title', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cfr-cli-multititle-'));
+    vi.stubGlobal('fetch', makeMultiTitleSyncFetch());
+    const { out, io } = makeIo({
+      CFR_INDEX_PATH: path.join(dir, 'index.sqlite'),
+      CFR_TITLES: '38,32',
+      CFR_LOG_LEVEL: 'error',
+    });
+    try {
+      expect(await main(['sync'], io)).toBe(0);
+      const printed = out.join('');
+      // Title 38 leads the sync (the product's mission title), then the
+      // remaining titles ascending — the documented multi-title order.
+      expect(printed).toMatch(
+        /title 38: synced 1 sections \+ 1 appendices \(issue date 2026-10-09; no provision changes; \d+ ms; corpus hash [0-9a-f]{64}\)\n/,
+      );
+      expect(printed).toMatch(
+        /title 32: synced 1 sections \+ 0 appendices \(issue date 2026-11-06; no provision changes; \d+ ms; corpus hash [0-9a-f]{64}\)\n/,
+      );
+      expect(printed.indexOf('title 38:')).toBeLessThan(printed.indexOf('title 32:'));
+      // Both titles' rows are in the one index file, each under its own
+      // authority — the Title 38 rows did not wipe the Title 32 ones.
+      const store = Store.open(path.join(dir, 'index.sqlite'));
+      try {
+        expect(store.getSection('70.3', 'section', 32)).not.toBeNull();
+        expect(store.getSection('4.125', 'section', 38)).not.toBeNull();
+        expect(store.getMeta('title.32.issue_date')).toBe('2026-11-06');
+        expect(store.getMeta('title.38.issue_date')).toBe('2026-10-09');
+      } finally {
+        store.close();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the single-title output shape when only Title 38 is enabled', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'cfr-cli-sync-'));
     let xml = SYNC_XML_V1;
     const fetchFn = makeSyncFetch(() => xml);
