@@ -598,7 +598,11 @@ describe('Store multi-title (schema v3)', () => {
       ],
     });
     try {
-      expect(temp.store.countSections()).toBe(2);
+      // The default scope is Title 38: one row of the pair.
+      expect(temp.store.countSections()).toBe(1);
+      expect(temp.store.countSections(32)).toBe(1);
+      // The whole store holds both authorities.
+      expect(temp.store.countAllSections()).toBe(2);
       // Default reads scope to Title 38; the title parameter selects 32.
       expect(temp.store.getSection('3.1', 'section')?.heading).toBe('Veterans benefits general.');
       expect(temp.store.getSection('3.1', 'section', 32)?.heading).toBe(
@@ -627,6 +631,66 @@ describe('Store multi-title (schema v3)', () => {
       // must not see it.
       expect(temp.store.citedBy('4.105', 32)).toEqual(['70.1']);
       expect(temp.store.citedBy('4.105')).toEqual([]);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('scopes search to one title — a sibling title never mixes into the results', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.125',
+          heading: 'Title 38 diagnosis.',
+          text: 'Diagnosis of mental disorders in the benefits schedule.',
+          markdown: '## Title 38 diagnosis.',
+        }),
+        makeSection({
+          citation: '4.125',
+          title: 32,
+          heading: 'Title 32 characterization.',
+          text: 'Diagnosis of mental disorders in the defense schedule.',
+          markdown: '## Title 32 characterization.',
+        }),
+      ],
+    });
+    try {
+      // The same citation exists in both titles: an unscoped search would
+      // return both rows (and the AND-tier join would multiply them).
+      const title38 = temp.store.search({ query: 'diagnosis', page: 1, perPage: 10 });
+      expect(title38.total).toBe(1);
+      expect(title38.hits.map((hit) => hit.citation)).toEqual(['4.125']);
+      expect(title38.hits[0]?.heading).toBe('Title 38 diagnosis.');
+
+      const title32 = temp.store.search({ query: 'diagnosis', page: 1, perPage: 10, title: 32 });
+      expect(title32.total).toBe(1);
+      expect(title32.hits.map((hit) => hit.citation)).toEqual(['4.125']);
+      expect(title32.hits[0]?.heading).toBe('Title 32 characterization.');
+
+      // A term only the other title has: the scoped search does not see it.
+      const only38 = temp.store.search({
+        query: 'benefits',
+        page: 1,
+        perPage: 10,
+        title: 32,
+      });
+      expect(only38.total).toBe(0);
+      expect(only38.hits).toEqual([]);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('scopes listParts to one title — counts never blend authorities', () => {
+    const temp = openTempStore({
+      sections: [
+        makeSection({ citation: '4.125', part: '4' }),
+        makeSection({ citation: '70.3', title: 32, part: '70' }),
+      ],
+    });
+    try {
+      expect(temp.store.listParts().map((row) => row.part)).toEqual(['4']);
+      expect(temp.store.listParts(32).map((row) => row.part)).toEqual(['70']);
     } finally {
       temp.cleanup();
     }

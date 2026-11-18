@@ -486,6 +486,66 @@ function makeSyncFetch(getXml: () => string): FetchLike {
   };
 }
 
+const TITLE_32_SYNC_XML = `<ECFR><DIV1 N="32" TYPE="TITLE"><HEAD>Title 32</HEAD><DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD><DIV5 N="70" TYPE="PART"><HEAD>Part 70</HEAD><DIV8 N="70.3" TYPE="SECTION"><HEAD>§ 70.3 Definitions.</HEAD><P>National defense terms.</P></DIV8></DIV5></DIV3></ECFR>`;
+
+const TITLE_32_SYNC_STRUCTURE = {
+  type: 'title',
+  identifier: '32',
+  label: 'Title 32—National Defense',
+  children: [
+    {
+      type: 'chapter',
+      identifier: 'I',
+      label: 'Chapter I',
+      children: [
+        {
+          type: 'part',
+          identifier: '70',
+          label: 'Part 70',
+          children: [{ type: 'section', identifier: '70.3', label: '§ 70.3', children: [] }],
+        },
+      ],
+    },
+  ],
+};
+
+/** A stub eCFR serving BOTH titles: the schedule lists 38 and 32, and the
+ *  document routes answer per `title-N` path segment. */
+function makeMultiTitleSyncFetch(): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/titles.json'))
+      return Response.json({
+        titles: [
+          {
+            number: 32,
+            name: 'Title 32',
+            latest_issue_date: '2026-11-06',
+            up_to_date_as_of: '2026-11-06',
+            latest_amended_on: '2026-11-06',
+          },
+          {
+            number: 38,
+            name: 'Title 38',
+            latest_issue_date: '2026-08-27',
+            up_to_date_as_of: '2026-10-09',
+            latest_amended_on: '2026-08-27',
+          },
+        ],
+      });
+    if (url.pathname.includes('/structure/'))
+      return Response.json(
+        url.pathname.includes('title-32') ? TITLE_32_SYNC_STRUCTURE : FIXTURE_STRUCTURE,
+      );
+    if (url.pathname.includes('/full/'))
+      return new Response(url.pathname.includes('title-32') ? TITLE_32_SYNC_XML : SYNC_XML_V1, {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    return new Response('not found', { status: 404 });
+  };
+}
+
 describe('exitCodeFor', () => {
   it('maps a usage mistake to 2 and a deployment fault to 1', () => {
     // A `ServiceError` carrying `invalid_input` is the READER's mistake, so
@@ -502,7 +562,44 @@ describe('exitCodeFor', () => {
 });
 
 describe('main: sync output', () => {
-  it('reports the provision-level change counts', async () => {
+  it('syncs every configured title and prints one line per title', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cfr-cli-multititle-'));
+    vi.stubGlobal('fetch', makeMultiTitleSyncFetch());
+    const { out, io } = makeIo({
+      CFR_INDEX_PATH: path.join(dir, 'index.sqlite'),
+      CFR_TITLES: '38,32',
+      CFR_LOG_LEVEL: 'error',
+    });
+    try {
+      expect(await main(['sync'], io)).toBe(0);
+      const printed = out.join('');
+      // Title 38 leads the sync (the product's mission title), then the
+      // remaining titles ascending — the documented multi-title order.
+      expect(printed).toMatch(
+        /title 38: synced 1 sections \+ 1 appendices \(issue date 2026-10-09; no provision changes; \d+ ms; corpus hash [0-9a-f]{64}\)\n/,
+      );
+      expect(printed).toMatch(
+        /title 32: synced 1 sections \+ 0 appendices \(issue date 2026-11-06; no provision changes; \d+ ms; corpus hash [0-9a-f]{64}\)\n/,
+      );
+      expect(printed.indexOf('title 38:')).toBeLessThan(printed.indexOf('title 32:'));
+      // Both titles' rows are in the one index file, each under its own
+      // authority — the Title 38 rows did not wipe the Title 32 ones.
+      const store = Store.open(path.join(dir, 'index.sqlite'));
+      try {
+        expect(store.getSection('70.3', 'section', 32)).not.toBeNull();
+        expect(store.getSection('4.125', 'section', 38)).not.toBeNull();
+        expect(store.getMeta('title.32.issue_date')).toBe('2026-11-06');
+        expect(store.getMeta('title.38.issue_date')).toBe('2026-10-09');
+      } finally {
+        store.close();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the single-title output shape when only Title 38 is enabled', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'cfr-cli-sync-'));
     let xml = SYNC_XML_V1;
     const fetchFn = makeSyncFetch(() => xml);

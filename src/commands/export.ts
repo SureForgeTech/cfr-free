@@ -21,13 +21,18 @@ export interface ExportReport {
 
 /**
  * One compact JSON line per provision, fields in the wire's SectionDetail
- * order (plus subchapter/subjectGroup) — insertion order here is the line's
- * key order, so the shape stays stable for pipeline consumers.
+ * order (plus subchapter/subjectGroup/title) — insertion order here is the
+ * line's key order, so the shape stays stable for pipeline consumers.
+ *
+ * `title` is in the line because the store can hold more than one CFR
+ * title: without it a pipeline consumer would read Title 32 and Title 38
+ * provisions as one undifferentiated corpus.
  */
 function toJsonlLine(row: SectionRow): string {
   return `${JSON.stringify({
     citation: row.citation,
     kind: row.kind,
+    title: row.title,
     heading: row.heading,
     chapter: row.chapter,
     subchapter: row.subchapter,
@@ -78,7 +83,11 @@ function writeMarkdown(store: Store, target: string): number {
     // Exactly one newline joins text to the separator: append only when the
     // stored text does not already end in one (verbatim either way).
     const body = row.text.endsWith('\n') ? row.text : `${row.text}\n`;
-    chunks.push(`\n## ${row.citation} — ${row.heading}\n${body}\n---\n`);
+    // The heading names the authority when the row is not Title 38's, so a
+    // multi-title export never presents Title 32 provisions under a Title
+    // 38 heading.
+    const label = row.title === 38 ? row.citation : `${row.citation} (Title ${row.title})`;
+    chunks.push(`\n## ${label} — ${row.heading}\n${body}\n---\n`);
   }
   writeExclusive(target, chunks.join(''));
   return rows.length;
@@ -186,7 +195,7 @@ export function runExportCommand(
   try {
     if (format === undefined) {
       snapshotExclusive(store, target);
-      provisions = store.countSections();
+      provisions = store.countAllSections();
     } else if (format === 'jsonl') {
       provisions = writeJsonl(store, target);
     } else {

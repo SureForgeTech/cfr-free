@@ -269,3 +269,150 @@ describe('EcfrApi.getTitleSchedule', () => {
     await expect(api.getTitleSchedule()).rejects.toBeInstanceOf(UpstreamFormatError);
   });
 });
+
+describe('EcfrApi title parameterization', () => {
+  /** Records every requested pathname and serves a body naming the title. */
+  function recordingFetch(paths: string[]): FetchLike {
+    return async (input) => {
+      const url = new URL(String(input));
+      paths.push(url.pathname);
+      if (url.pathname.endsWith('/titles.json')) {
+        return new Response(
+          JSON.stringify({
+            titles: [
+              {
+                number: 32,
+                name: 'National Defense',
+                latest_issue_date: DATE,
+                up_to_date_as_of: DATE,
+                latest_amended_on: DATE,
+              },
+              {
+                number: 38,
+                name: 'Pensions',
+                latest_issue_date: DATE,
+                up_to_date_as_of: DATE,
+                latest_amended_on: DATE,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      const title = /title-(\d+)\.(?:xml|json)$/.exec(url.pathname)?.[1] ?? 'unknown';
+      if (url.pathname.includes('/structure/')) {
+        return new Response(
+          JSON.stringify({
+            type: 'title',
+            identifier: title,
+            label: `Title ${title}`,
+            children: [],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(`<ECFR><TITLE>${title}</TITLE></ECFR>`, {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    };
+  }
+
+  it('requests the title-32 URLs for structure and full-title fetches', async () => {
+    const paths: string[] = [];
+    const api = makeApi(recordingFetch(paths));
+
+    await api.getStructureJson(DATE, 32);
+    await api.getFullTitleXml(DATE, 32);
+    // The default stays Title 38 — existing call sites are source-compatible.
+    await api.getStructureJson(DATE);
+    await api.getFullTitleXml(DATE);
+
+    expect(paths).toContain(`/api/versioner/v1/structure/${DATE}/title-32.json`);
+    expect(paths).toContain(`/api/versioner/v1/full/${DATE}/title-32.xml`);
+    expect(paths).toContain(`/api/versioner/v1/structure/${DATE}/title-38.json`);
+    expect(paths).toContain(`/api/versioner/v1/full/${DATE}/title-38.xml`);
+    expect(paths.some((p) => p.includes('title-32'))).toBe(true);
+  });
+
+  it('resolves the schedule for a named title and rejects a title missing upstream', async () => {
+    const api = makeApi(recordingFetch([]));
+    await expect(api.getTitleSchedule(32)).resolves.toEqual({ upToDateAsOf: DATE });
+
+    const only38 = makeApi(
+      async () =>
+        new Response(
+          JSON.stringify({
+            titles: [
+              {
+                number: 38,
+                name: 'Pensions',
+                latest_issue_date: DATE,
+                up_to_date_as_of: DATE,
+                latest_amended_on: DATE,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    await expect(only38.getTitleSchedule(32)).rejects.toThrow(/does not include title 32/);
+  });
+
+  it('memoizes title 32 and title 38 separately for the same date', async () => {
+    // The memo key is title+date: the two authorities' documents for one
+    // date are different documents and must never share a cache entry.
+    const paths: string[] = [];
+    const api = makeApi(recordingFetch(paths));
+
+    const xml32 = await api.getFullTitleXml(DATE, 32);
+    const xml38 = await api.getFullTitleXml(DATE);
+    expect(xml32).not.toBe(xml38);
+    expect(xml32).toContain('<TITLE>32</TITLE>');
+    expect(xml38).toContain('<TITLE>38</TITLE>');
+    expect(paths.filter((p) => p.includes('/full/'))).toHaveLength(2);
+
+    // Re-reading the same title+date is memoized — no third fetch.
+    expect(await api.getFullTitleXml(DATE, 32)).toBe(xml32);
+    expect(await api.getFullTitleXml(DATE)).toBe(xml38);
+    expect(paths.filter((p) => p.includes('/full/'))).toHaveLength(2);
+  });
+
+  it('serves concurrent readers of one title from one fetch, per title', async () => {
+    let fetches = 0;
+    // One resolver PER in-flight fetch: two titles fetch at once, so a single
+    // slot would release only one of them and leave the other pending.
+    const releases: Array<() => void> = [];
+    const api = makeApi(async () => {
+      fetches += 1;
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+      return new Response('<ECFR></ECFR>', {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    });
+
+    const readers = [
+      api.getFullTitleXml(DATE, 32),
+      api.getFullTitleXml(DATE, 32),
+      api.getFullTitleXml(DATE),
+    ];
+    await waitFor(() => fetches === 2);
+    // Two titles in flight: one fetch EACH — the single-flight is per title.
+    expect(fetches).toBe(2);
+    for (const release of releases) release();
+    await Promise.all(readers);
+    expect(fetches).toBe(2);
+  });
+
+  it('rejects title numbers outside 1-50 and non-integers', async () => {
+    const api = makeApi(recordingFetch([]));
+    await expect(api.getFullTitleXml(DATE, 0)).rejects.toThrow(/invalid CFR title/);
+    await expect(api.getFullTitleXml(DATE, 51)).rejects.toThrow(/invalid CFR title/);
+    await expect(api.getFullTitleXml(DATE, 38.5)).rejects.toThrow(/invalid CFR title/);
+    await expect(api.getStructureJson(DATE, -1)).rejects.toThrow(/invalid CFR title/);
+    await expect(api.getTitleSchedule(51)).rejects.toThrow(/invalid CFR title/);
+  });
+});

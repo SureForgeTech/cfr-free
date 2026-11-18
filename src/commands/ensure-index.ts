@@ -1,4 +1,4 @@
-import type { AppConfig } from '../config.js';
+import { titleSyncOrder, type AppConfig } from '../config.js';
 import { HttpClient } from '../core/http-client.js';
 import { EcfrApi } from '../core/ecfr.js';
 import { CommandError, EXIT } from '../exit-codes.js';
@@ -67,6 +67,34 @@ export interface EnsureIndexDeps {
 }
 
 /**
+ * Sync every configured title sequentially (38 first, then ascending) with
+ * one shared eCFR client. A failure in any title propagates to the caller;
+ * the earlier titles' commits are already durable, and the failure names
+ * the title through the structured log's fields.
+ *
+ * Exported so the background refresh schedulers (`serve`, `mcp`) refresh the
+ * same set of titles the startup sync built — a scheduler that refreshed
+ * only Title 38 would silently drop the other configured titles from a
+ * periodic refresh.
+ */
+export async function syncAllTitles(
+  store: Store,
+  config: AppConfig,
+  logger: Logger,
+  deps: EnsureIndexDeps = {},
+): Promise<void> {
+  const createEcfr = deps.createEcfr ?? createEcfrApi;
+  const ecfr = createEcfr();
+  for (const title of titleSyncOrder(config.titles)) {
+    await syncWithGuidance(
+      { ecfr, store, logger, title },
+      logger,
+      'Run `cfr-free sync` to build the index.',
+    );
+  }
+}
+
+/**
  * Guarantee a usable index before serving.
  *
  * Policy (delivery log §10 #2): sync before serving; if a refresh fails but rows
@@ -83,7 +111,6 @@ export async function ensureIndex(
   logger: Logger,
   deps: EnsureIndexDeps = {},
 ): Promise<Freshness> {
-  const createEcfr = deps.createEcfr ?? createEcfrApi;
   const service = new CFRService(store, config.maxAgeDays);
   const status = service.status();
 
@@ -95,11 +122,7 @@ export async function ensureIndex(
       );
     }
     logger.info('index empty, running initial sync', { index: config.indexPath });
-    await syncWithGuidance(
-      { ecfr: createEcfr(), store, logger },
-      logger,
-      'Run `cfr-free sync` to build the index.',
-    );
+    await syncAllTitles(store, config, logger, deps);
     return 'synced';
   }
 
@@ -109,11 +132,7 @@ export async function ensureIndex(
       maxAgeDays: config.maxAgeDays,
     });
     try {
-      await syncWithGuidance(
-        { ecfr: createEcfr(), store, logger },
-        logger,
-        'Run `cfr-free sync` to build the index.',
-      );
+      await syncAllTitles(store, config, logger, deps);
       return 'synced';
     } catch (error) {
       logger.warn('refresh failed, serving existing index', {
