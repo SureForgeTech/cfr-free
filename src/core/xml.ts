@@ -540,7 +540,9 @@ function extractSection(
     subjectGroup: stackField(stack, 'SUBJGRP'),
     path: stackPath(stack),
     text: rendered.text,
-    markdown: rendered.markdown,
+    // Leave the source text intact and prevent inline Markdown destinations
+    // from turning into active links or images in downstream renderers.
+    markdown: rendered.markdown.replace(/!\[/g, '!\\[').replace(/\]\(/g, ']\\('),
   };
 }
 

@@ -6,7 +6,7 @@ import { SemaphoreOverflowError } from '../core/semaphore.js';
 import type { CFRService } from '../core/service.js';
 import { ServiceError, StructureError, UpstreamFormatError } from '../core/errors.js';
 import type { Logger } from '../logger.js';
-import { RateLimiter } from './rate-limit.js';
+import { canonicalIp, RateLimiter } from './rate-limit.js';
 import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from './ui.js';
 import { PLAYGROUND_CSP, PLAYGROUND_HTML } from './playground.js';
 import { calculateCombinedRating } from '../core/va-math.js';
@@ -854,12 +854,6 @@ export interface HttpServerOptions {
    *   origin and lets it read every response. The request still names
    *   `evil.example` in `Host`, so a `Host` that is not a loopback name is
    *   refused (421).
-   * - Cross-site requests: a browser marks a request that a page on another
-   *   site made with `Sec-Fetch-Site: cross-site`. Nothing legitimate does
-   *   that to a local API (the CORP header already forbids reading the
-   *   answer), but a page could still spend the diff and redline routes'
-   *   upstream fetches, so they are refused (403).
-   *
    * Unset for a remote bind whose host names the operator has not listed
    * (`CFR_ALLOWED_HOSTS`): they are unknowable here.
    */
@@ -870,6 +864,11 @@ export interface HttpServerOptions {
    * the operator chose (`CFR_ALLOWED_HOSTS`), not one a web page can pick.
    */
   readonly allowedHosts?: readonly string[];
+  /**
+   * Trusted reverse proxy IP addresses. When a direct connection originates
+   * from one of these addresses, the client IP is extracted from X-Forwarded-For.
+   */
+  readonly trustedProxies?: readonly string[];
 }
 
 /**
@@ -903,10 +902,10 @@ function hostNameOf(header: string | undefined): string | null {
 }
 
 /**
- * The browser-facing gates of a loopback bind. Returns true when it
+ * Host name verification for a loopback bind. Returns true when it
  * answered (refused) the request.
  */
-function refuseNonLocalRequest(
+function refuseNonLocalHost(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   extraHosts: ReadonlySet<string>,
@@ -923,16 +922,34 @@ function refuseNonLocalRequest(
     );
     return true;
   }
-  if (req.headers['sec-fetch-site'] === 'cross-site') {
-    sendJson(
-      req,
-      res,
-      403,
-      errorBody('forbidden', 'cross-site requests to this server are refused'),
-    );
-    return true;
-  }
   return false;
+}
+
+/**
+ * Resolve the client peer IP. When the direct connection originates from a
+ * configured trusted proxy, extracts the client IP from the rightmost
+ * untrusted entry in X-Forwarded-For. If direct connection is not from a
+ * trusted proxy, the direct socket address is always used to prevent spoofing.
+ */
+function resolvePeerAddress(
+  req: http.IncomingMessage,
+  trustedProxies: ReadonlySet<string>,
+): string {
+  const direct = canonicalIp(req.socket.remoteAddress ?? '') ?? 'unknown';
+  if (!trustedProxies.has(direct)) return direct;
+  const xff = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(xff) ? xff.join(', ') : xff;
+  if (raw === undefined) return direct;
+
+  let peer = direct;
+  for (const entry of raw.split(',').reverse()) {
+    const hop = canonicalIp(entry);
+    // A malformed hop breaks the chain. Entries to its left are unverified.
+    if (hop === null) return direct;
+    peer = hop;
+    if (!trustedProxies.has(peer)) break;
+  }
+  return peer;
 }
 
 /** The request's URL, or null when it does not parse. */
@@ -983,8 +1000,18 @@ function precheck(
   limiter: RateLimiter | null,
   localOnly: boolean,
   extraHosts: ReadonlySet<string>,
+  trustedProxies: ReadonlySet<string>,
 ): URL | null {
-  if (localOnly && refuseNonLocalRequest(req, res, extraHosts)) return null;
+  if (req.headers['sec-fetch-site'] === 'cross-site') {
+    sendJson(
+      req,
+      res,
+      403,
+      errorBody('forbidden', 'cross-site requests to this server are refused'),
+    );
+    return null;
+  }
+  if (localOnly && refuseNonLocalHost(req, res, extraHosts)) return null;
   const methodRefused = req.method !== 'GET' && req.method !== 'HEAD';
   const urlTooLong = Buffer.byteLength(req.url ?? '/', 'utf8') > MAX_URL_BYTES;
   // The URL is parsed before the limiter, because the cost of a request
@@ -997,7 +1024,8 @@ function precheck(
     // unlimited POSTs) without ever touching the budget.
     const refused = methodRefused || urlTooLong || url === null;
     const cost = refused ? REFUSED_REQUEST_COST : requestCost(url.pathname);
-    const verdict = limiter.consume(req.socket.remoteAddress ?? 'unknown', cost);
+    const peer = resolvePeerAddress(req, trustedProxies);
+    const verdict = limiter.consume(peer, cost);
     if (!verdict.allowed) {
       res.setHeader('retry-after', String(Math.max(1, Math.ceil(verdict.retryAfterSec))));
       sendJson(req, res, 429, errorBody('rate_limited', 'too many requests — retry shortly'));
@@ -1042,6 +1070,9 @@ export function createHttpServer(
     options.maxConcurrentUpstream ?? DEFAULT_MAX_CONCURRENT_UPSTREAM,
   );
   const extraHosts = new Set((options.allowedHosts ?? []).map((name) => name.toLowerCase()));
+  const trustedProxies = new Set(
+    (options.trustedProxies ?? []).map(canonicalIp).filter((ip) => ip !== null),
+  );
   const server = http.createServer((req, res) => {
     // `dispatch` is async since the diff and redline routes await the eCFR
     // facade, so one async task wraps the whole cycle: precheck runs first (it
@@ -1050,7 +1081,14 @@ export function createHttpServer(
     // handlers have always used — ServiceError/StructureError → statusFor
     // (400/404/500 + client-safe message), anything else → logged + generic 500.
     void (async () => {
-      const url = precheck(req, res, limiter, options.localOnly === true, extraHosts);
+      const url = precheck(
+        req,
+        res,
+        limiter,
+        options.localOnly === true,
+        extraHosts,
+        trustedProxies,
+      );
       if (url === null) return;
 
       try {

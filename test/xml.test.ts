@@ -339,4 +339,23 @@ describe('image content markers (P1-01)', () => {
     expect(section?.heading).toBe('Title.');
     expect(section?.heading).not.toContain('image content not included');
   });
+
+  it('escapes literal markdown image syntax in text so downstream clients do not fetch images', () => {
+    const xml =
+      '<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD>' +
+      '<P>See graphic: ![exfiltration](https://evil.example/beacon.png) here.</P></DIV8></ECFR>';
+    const [section] = parseTitleXml(xml);
+    expect(section?.markdown).toContain('!\\[exfiltration]\\(https://evil.example/beacon.png)');
+    expect(section?.markdown).not.toContain('![exfiltration]');
+  });
+
+  it('neutralizes inline links while preserving bracketed text and the plain source', () => {
+    const text = 'See [this [reference]](https://example.org/) and [reserved].';
+    const xml = `<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD><P>${text}</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    expect(section?.text).toBe(text);
+    expect(section?.markdown).toBe(
+      'See [this [reference]]\\(https://example.org/) and [reserved].',
+    );
+  });
 });

@@ -1,6 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
+import { defaultIndexDirectory } from '../config.js';
 import { hashContent } from './changes.js';
 import {
   EXCEPTION_DEMOTION_KEY,
@@ -297,10 +299,8 @@ export interface StoreOpenOptions {
   /** Override the busy-wait timeout (tests use a short one). */
   readonly busyTimeoutMs?: number;
   /**
-   * Open an existing index without creating directories, changing its journal
-   * mode, creating tables, or upgrading its schema. SQLite's native read-only
-   * open blocks writes and missing-file creation. Only read paths that treat
-   * the file as evidence (comparison, verification) may set this.
+   * Open a standalone snapshot as immutable evidence. The file and its
+   * directory are left untouched, and journal sidecars are refused.
    */
   readonly readOnly?: boolean;
   /**
@@ -652,12 +652,34 @@ function refuseForeignDatabase(db: DatabaseSync): void {
   }
 }
 
-function prepareDatabaseTarget(filePath: string, readOnly: boolean): string {
-  const directory = path.dirname(filePath);
-  if (!readOnly && directory.length > 0 && directory !== '.') {
-    mkdirSync(directory, { recursive: true });
+function tightenPermissions(target: string, kind: 'file' | 'directory'): void {
+  try {
+    const stat = lstatSync(target);
+    if (kind === 'file' && stat.isFile()) chmodSync(target, 0o600);
+    if (kind === 'directory' && stat.isDirectory()) chmodSync(target, 0o700);
+  } catch {
+    // Sidecars can disappear on close, and some filesystems lack POSIX modes.
   }
-  return filePath;
+}
+
+function ensureDirectoryPermissions(filePath: string): void {
+  const directory = path.dirname(filePath);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const defaultDirectory = defaultIndexDirectory();
+  if (directory === defaultDirectory) tightenPermissions(defaultDirectory, 'directory');
+}
+
+function evidenceDatabaseTarget(filePath: string): string {
+  const resolved = realpathSync(filePath);
+  // SQLite's ordinary read-only mode can create WAL/SHM files. Immutable
+  // mode avoids those writes but ignores journals, so require a standalone
+  // snapshot before using it.
+  if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(resolved + suffix))) {
+    throw new StoreError('index has SQLite journal sidecars — use a standalone cfr-free export');
+  }
+  const target = pathToFileURL(resolved);
+  target.searchParams.set('immutable', '1');
+  return target.href;
 }
 
 function assertQuickCheck(db: DatabaseSync): void {
@@ -668,11 +690,12 @@ function assertQuickCheck(db: DatabaseSync): void {
 
 function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync {
   const readOnly = options.readOnly ?? false;
-  const sqliteTarget = prepareDatabaseTarget(filePath, readOnly);
+  const onDisk = filePath !== ':memory:';
+  if (!readOnly && onDisk) ensureDirectoryPermissions(filePath);
 
   const db = readOnly
-    ? new DatabaseSync(sqliteTarget, { readOnly: true })
-    : new DatabaseSync(sqliteTarget);
+    ? new DatabaseSync(evidenceDatabaseTarget(filePath), { readOnly: true })
+    : new DatabaseSync(filePath);
   try {
     // The file is an INPUT: `export` exists so an index can be handed to
     // someone else, and `CFR_INDEX_PATH` can name any file. Views and
@@ -681,6 +704,7 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     // before anything reads it.
     db.exec('PRAGMA trusted_schema = OFF');
     refuseForeignDatabase(db);
+    if (!readOnly && onDisk) tightenPermissions(filePath, 'file');
     // A read-only evidence open must not rewrite a delete-mode snapshot's
     // header just to prefer WAL; that mutation belongs to the owner/sync.
     if (!readOnly) db.exec('PRAGMA journal_mode = WAL');
@@ -698,6 +722,10 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     } else {
       db.exec(SCHEMA_SQL);
       ensureSchemaVersion(db, options.allowSchemaUpgrade ?? false);
+      if (onDisk) {
+        tightenPermissions(`${filePath}-wal`, 'file');
+        tightenPermissions(`${filePath}-shm`, 'file');
+      }
     }
     return db;
   } catch (error) {

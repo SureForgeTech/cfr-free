@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RateLimiter } from '../../src/titan/rate-limit.js';
+import { normalizePeerAddress, RateLimiter } from '../../src/titan/rate-limit.js';
 
 /** Test-only view of the private cap and bucket map (`private readonly` erases at runtime). */
 interface PruneInternals {
@@ -136,5 +136,53 @@ describe('RateLimiter.prune', () => {
     internals(limiter).maxPeers = 1;
     limiter.prune();
     expect([...internals(limiter).buckets.keys()]).toEqual(['newest']);
+  });
+
+  it('evicts a batch to leave room for new peers', () => {
+    let nowMs = 0;
+    const limiter = new RateLimiter({
+      capacity: 1,
+      refillPerSec: 1,
+      maxPeers: 20,
+      now: () => nowMs,
+    });
+    for (let peer = 0; peer <= 20; peer += 1) {
+      nowMs += 1;
+      limiter.consume(`peer-${peer}`);
+    }
+    expect(internals(limiter).buckets.size).toBe(18);
+    expect([...internals(limiter).buckets.keys()][0]).toBe('peer-3');
+  });
+});
+
+describe('normalizePeerAddress', () => {
+  it('unwraps IPv4-mapped IPv6 addresses', () => {
+    expect(normalizePeerAddress('::ffff:192.0.2.1')).toBe('192.0.2.1');
+    expect(normalizePeerAddress('::ffff:127.0.0.1')).toBe('127.0.0.1');
+    expect(normalizePeerAddress('0:0:0:0:0:FFFF:C000:0201')).toBe('192.0.2.1');
+  });
+
+  it('keeps standard IPv4 addresses unchanged', () => {
+    expect(normalizePeerAddress('192.168.1.1')).toBe('192.168.1.1');
+    expect(normalizePeerAddress('10.0.0.1')).toBe('10.0.0.1');
+  });
+
+  it('groups IPv6 addresses by their /64 prefix', () => {
+    expect(normalizePeerAddress('2001:db8:abcd:0012:0:0:0:1')).toBe('2001:db8:abcd:12::/64');
+    expect(normalizePeerAddress('2001:db8:abcd:12::1')).toBe('2001:db8:abcd:12::/64');
+    expect(normalizePeerAddress('2001:db8:abcd:12::2')).toBe('2001:db8:abcd:12::/64');
+    expect(normalizePeerAddress('::1')).toBe('0:0:0:0::/64');
+  });
+
+  it('shares rate limiter bucket across rotating interface IDs in the same /64 subnet', () => {
+    const limiter = new RateLimiter({ capacity: 2, refillPerSec: 1, now: () => 0 });
+    // First IP in the subnet takes 1 token
+    expect(limiter.consume('2001:db8:cafe:1::10').allowed).toBe(true);
+    // Second IP in the SAME /64 subnet takes the 2nd token
+    expect(limiter.consume('2001:db8:cafe:1::99').allowed).toBe(true);
+    // Third request from another IP in the same /64 subnet is rate-limited!
+    expect(limiter.consume('2001:db8:cafe:1::abcd').allowed).toBe(false);
+    // A different /64 subnet gets its own bucket
+    expect(limiter.consume('2001:db8:cafe:2::1').allowed).toBe(true);
   });
 });

@@ -1,3 +1,4 @@
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -6,6 +7,10 @@ import type { LogLevel } from './logger.js';
 /** Raised when the process environment fails validation. */
 export class ConfigError extends Error {
   override readonly name = 'ConfigError';
+}
+
+export function defaultIndexDirectory(): string {
+  return path.join(os.homedir(), '.cfr-free');
 }
 
 /** Runtime configuration, validated from environment variables. */
@@ -33,6 +38,10 @@ export interface AppConfig {
    * machine that forwards the public `Host` (lower-case, no port).
    */
   readonly allowedHosts: readonly string[];
+  /**
+   * Trusted reverse proxy IP addresses allowed to forward client IPs via X-Forwarded-For.
+   */
+  readonly trustedProxies: readonly string[];
   /** Explicit opt-in required for non-loopback binds. */
   readonly allowRemote: boolean;
   /** Log verbosity (stderr only). */
@@ -82,6 +91,13 @@ const envSchema = z.object({
     .max(500)
     .refine((value) => hostNames(value).every((name) => /^[A-Za-z0-9.-]+$/.test(name)), {
       message: 'must be comma-separated host names',
+    })
+    .optional(),
+  CFR_TRUSTED_PROXIES: z
+    .string()
+    .max(500)
+    .refine((value) => hostNames(value).every((ip) => net.isIP(ip) !== 0), {
+      message: 'must be comma-separated IP addresses',
     })
     .optional(),
   CFR_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -181,7 +197,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
   return {
-    indexPath: e.CFR_INDEX_PATH ?? path.join(os.homedir(), '.cfr-free', 'index.sqlite'),
+    indexPath: e.CFR_INDEX_PATH ?? path.join(defaultIndexDirectory(), 'index.sqlite'),
     maxAgeDays: parseBoundedInt(
       e.CFR_MAX_AGE_DAYS,
       DEFAULT_MAX_AGE_DAYS,
@@ -195,6 +211,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host,
     port: parseBoundedInt(e.CFR_PORT, DEFAULT_PORT, 1, 65_535, 'CFR_PORT'),
     allowedHosts: hostNames(e.CFR_ALLOWED_HOSTS ?? '').map((name) => name.toLowerCase()),
+    trustedProxies: hostNames(e.CFR_TRUSTED_PROXIES ?? ''),
     allowRemote,
     logLevel: e.CFR_LOG_LEVEL ?? 'info',
   };

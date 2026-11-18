@@ -12,7 +12,7 @@ import { CFRService } from '../src/core/service.js';
 import { Store } from '../src/core/store.js';
 import { CommandError } from '../src/exit-codes.js';
 import { renderToolText } from '../src/mcp/tool-result.js';
-import { createHttpServer } from '../src/titan/http-server.js';
+import { createHttpServer, type HttpServerOptions } from '../src/titan/http-server.js';
 import { createTestLogger, openTempStore } from './helpers.js';
 
 /**
@@ -20,6 +20,77 @@ import { createTestLogger, openTempStore } from './helpers.js';
  * party controls — a web page in the user's browser, a file path, a file
  * received from someone else, text that came from upstream.
  */
+
+describe('HTTP access control and peer budgets', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) cleanup();
+  });
+
+  function requestHandler(options: HttpServerOptions) {
+    const temp = openTempStore();
+    cleanups.push(temp.cleanup);
+    const server = createHttpServer(new CFRService(temp.store, 7), createTestLogger(), {
+      rateLimit: { capacity: 1, refillPerSec: 0.1 },
+      ...options,
+    });
+    return (peer: string, headers: http.IncomingHttpHeaders) => {
+      // Exercise the real request handler without opening a loopback listener.
+      const socket = new net.Socket();
+      Object.defineProperty(socket, 'remoteAddress', { value: peer });
+      const req = new http.IncomingMessage(socket);
+      req.method = 'GET';
+      req.url = '/health';
+      req.headers = headers;
+      const res = new http.ServerResponse(req);
+      server.emit('request', req, res);
+      return res.statusCode;
+    };
+  }
+
+  it('refuses cross-site requests unconditionally, even on remote binds', () => {
+    const request = requestHandler({ localOnly: false });
+    expect(request('127.0.0.1', { host: 'cfr.example.org', 'sec-fetch-site': 'cross-site' })).toBe(
+      403,
+    );
+  });
+
+  it('resolves X-Forwarded-For only when the direct peer is a trusted proxy', () => {
+    const untrusted = requestHandler({ trustedProxies: [] });
+    expect(untrusted('127.0.0.1', { 'x-forwarded-for': '203.0.113.1' })).toBe(200);
+    expect(untrusted('127.0.0.1', { 'x-forwarded-for': '203.0.113.2' })).toBe(429);
+
+    const trusted = requestHandler({ trustedProxies: ['127.0.0.1'] });
+    expect(trusted('127.0.0.1', { 'x-forwarded-for': '203.0.113.1' })).toBe(200);
+    expect(trusted('127.0.0.1', { 'x-forwarded-for': '203.0.113.1' })).toBe(429);
+    expect(trusted('127.0.0.1', { 'x-forwarded-for': '203.0.113.2' })).toBe(200);
+  });
+
+  it('ignores invalid proxy entries and falls back to the socket for a malformed chain', () => {
+    const request = requestHandler({ trustedProxies: ['not-an-ip', '127.0.0.1'] });
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.1, not-an-ip' })).toBe(200);
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.2, 192.0.2.3:1234' })).toBe(429);
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.3,' })).toBe(429);
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.1' })).toBe(200);
+  });
+
+  it('matches trusted IPv6 and mapped IPv4 hops by their canonical addresses', () => {
+    const request = requestHandler({
+      trustedProxies: ['::FFFF:127.0.0.1', '2001:0DB8:1234:0000:0000:0000:0000:0002'],
+    });
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.1, 2001:db8:1234::2' })).toBe(200);
+    expect(
+      request('::ffff:7f00:1', {
+        'x-forwarded-for': '203.0.113.99, ::ffff:cb00:7101, 2001:db8:1234::2',
+      }),
+    ).toBe(429);
+    expect(request('127.0.0.1', { 'x-forwarded-for': '203.0.113.2, 2001:db8:1234::2' })).toBe(200);
+
+    // Another host on the trusted proxy's /64 cannot delegate its identity.
+    expect(request('2001:db8:1234::3', { 'x-forwarded-for': '203.0.113.10' })).toBe(200);
+    expect(request('2001:db8:1234::3', { 'x-forwarded-for': '203.0.113.11' })).toBe(429);
+  });
+});
 
 describe('loopback server and the browser', () => {
   const cleanups: Array<() => Promise<void> | void> = [];

@@ -1,8 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { defaultIndexDirectory } from '../src/config.js';
 import { Store, StoreError, SCHEMA_VERSION } from '../src/core/store.js';
 import { syncIndex } from '../src/core/sync.js';
 import type { EcfrApi } from '../src/core/ecfr.js';
@@ -16,10 +25,103 @@ import {
 
 describe('Store', () => {
   it('creates parent directories and reports its path', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-store-'));
+    const directory = path.join(root, 'created-by-cfr');
+    const file = path.join(directory, 'index.sqlite');
+    try {
+      const store = Store.open(file);
+      try {
+        expect(store.path).toBe(file);
+        expect(store.countSections()).toBe(0);
+        if (process.platform !== 'win32') {
+          expect(statSync(directory).mode & 0o777).toBe(0o700);
+          expect(statSync(file).mode & 0o777).toBe(0o600);
+        }
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('tightens an existing default data directory', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'cfr-home-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const directory = defaultIndexDirectory();
+      const file = path.join(directory, 'index.sqlite');
+      Store.open(file).close();
+      chmodSync(directory, 0o755);
+      Store.open(file).close();
+      expect(statSync(directory).mode & 0o777).toBe(0o700);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens an existing index and its WAL files while preserving a custom parent',
+    () => {
+      const temp = openTempStore();
+      try {
+        const file = temp.store.path;
+        const directory = path.dirname(file);
+        chmodSync(directory, 0o755);
+        const files = [file, `${file}-wal`, `${file}-shm`];
+        for (const target of files) chmodSync(target, 0o644);
+        Store.open(file).close();
+        expect(statSync(directory).mode & 0o777).toBe(0o755);
+        expect(files.map((target) => statSync(target).mode & 0o777)).toEqual([0o600, 0o600, 0o600]);
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reads evidence in the default data directory without changing modes or creating sidecars',
+    () => {
+      const home = mkdtempSync(path.join(os.tmpdir(), 'cfr-evidence-'));
+      vi.stubEnv('HOME', home);
+      try {
+        const directory = defaultIndexDirectory();
+        const file = path.join(directory, 'index.sqlite');
+        const writable = Store.open(file);
+        writable.setMeta('evidence', 'preserved');
+        writable.close();
+        chmodSync(directory, 0o755);
+        chmodSync(file, 0o644);
+        const contents = readFileSync(file);
+        const evidence = Store.open(file, { readOnly: true });
+        try {
+          expect(evidence.getMeta('evidence')).toBe('preserved');
+          expect(readdirSync(directory)).toEqual(['index.sqlite']);
+        } finally {
+          evidence.close();
+        }
+        expect(readFileSync(file)).toEqual(contents);
+        expect(statSync(directory).mode & 0o777).toBe(0o755);
+        expect(statSync(file).mode & 0o777).toBe(0o644);
+        const missing = path.join(directory, 'missing', 'index.sqlite');
+        expect(() => Store.open(missing, { readOnly: true })).toThrow(StoreError);
+        expect(readdirSync(directory)).toEqual(['index.sqlite']);
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('refuses live WAL evidence before reading an incomplete checkpoint', () => {
     const temp = openTempStore();
     try {
-      expect(temp.store.path).toContain('index.sqlite');
-      expect(temp.store.countSections()).toBe(FIXTURE_SECTIONS.length);
+      const directory = path.dirname(temp.store.path);
+      const before = readdirSync(directory);
+      expect(before).toContain('index.sqlite-wal');
+      expect(() => Store.open(temp.store.path, { readOnly: true })).toThrow(/standalone/);
+      expect(readdirSync(directory)).toEqual(before);
     } finally {
       temp.cleanup();
     }
