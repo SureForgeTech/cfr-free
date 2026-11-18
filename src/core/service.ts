@@ -139,7 +139,7 @@ export interface SearchResponse {
   readonly indexIssueDate: string | null;
   /** True when the local index is older than CFR_MAX_AGE_DAYS. */
   readonly indexStale: boolean;
-  /** Warning to surface to a client when the index is stale; null otherwise. */
+  /** Stale-index warning and out-of-scope citation guidance, when applicable. */
   readonly notice: string | null;
   /**
    * The query's content terms that the returned hits answered.
@@ -481,9 +481,7 @@ function stripParagraphSuffix(query: string): string {
 /**
  * A citation, with the CFR title it NAMES when it names one.
  *
- * `32 CFR § 70.1` names Title 32; `4.125` names none — and an untitled
- * citation may exist in more than one stored title, which is exactly the
- * ambiguity the section read has to settle.
+ * `32 CFR § 70.1` names Title 32; `4.125` uses the request's scope.
  */
 interface ResolvedCitation {
   readonly kind: 'section' | 'appendix';
@@ -535,8 +533,8 @@ function noticeFor(status: IndexStatus): string | null {
  * Read-only operations over the local index.
  *
  * The index holds every enabled CFR title's rows; every read is scoped to
- * one authority — the title the caller names, or (for a search) Title 38,
- * the wire-compatible default (multi-title design, 2026-11-13).
+ * the title the caller names or defaults to Title 38. Search can also span
+ * all stored titles (multi-title design, 2026-11-13).
  */
 export class CFRService {
   private readonly store: Store;
@@ -568,7 +566,16 @@ export class CFRService {
     // (the wire-compatible default), `all` means every stored title.
     const scope: TitleScope = title ?? DEFAULT_TITLE;
     const outcome = this.store.search({ query, page, perPage, part, kind, chapter, title: scope });
-    const pins = this.directHits(query, { part, kind, chapter }, scope);
+    const citation = parseCitation(stripParagraphSuffix(query));
+    const citedTitle = citation?.title;
+    const scopeNotice =
+      scope !== 'all' && citedTitle !== undefined && citedTitle !== scope
+        ? `The citation names Title ${citedTitle}, outside the Title ${scope} search scope. Pass title=${citedTitle} to search that title.`
+        : null;
+    const pins =
+      citation === null || scopeNotice !== null
+        ? []
+        : this.directHits(query, citation, { part, kind, chapter }, scope);
 
     let hits = outcome.hits.map((hit) => this.presentHit(hit, false));
     let total = outcome.total;
@@ -598,7 +605,7 @@ export class CFRService {
       hits,
       indexIssueDate: status.issueDate,
       indexStale: status.stale,
-      notice: noticeFor(status),
+      notice: [noticeFor(status), scopeNotice].filter(Boolean).join('. ') || null,
       matchedTerms: groundingTerms.matchedTerms,
       unmatchedTerms: groundingTerms.unmatchedTerms,
     };
@@ -619,6 +626,7 @@ export class CFRService {
    */
   private directHits(
     query: string,
+    normalized: ResolvedCitation,
     filters: {
       readonly part: string | undefined;
       readonly kind: 'section' | 'appendix' | undefined;
@@ -626,13 +634,6 @@ export class CFRService {
     },
     scope: TitleScope,
   ): (PresentedHit & { readonly inResults: boolean })[] {
-    const normalized = parseCitation(stripParagraphSuffix(query));
-    if (
-      normalized === null ||
-      (scope !== 'all' && normalized.title !== undefined && normalized.title !== scope)
-    ) {
-      return [];
-    }
     const pinScope = normalized.title ?? scope;
     const rows =
       pinScope === 'all'
@@ -745,9 +746,8 @@ export class CFRService {
    * The provision a citation names, resolved against the titles the store
    * holds.
    *
-   * A named title resolves within that title only. An untitled read tries
-   * Title 38 first, then accepts a unique match or reports the titles when
-   * multiple other titles hold the citation.
+   * A read searches exactly one title, defaulting to Title 38. On an untitled
+   * miss, other stored titles can supply hints for a more specific request.
    *
    * `all` is refused: a read answers with ONE provision, and "every
    * stored title" would be a search scope, not an answer.
@@ -766,25 +766,16 @@ export class CFRService {
     }
     const row = this.store.getSection(citation, kind, title ?? DEFAULT_TITLE);
     if (row !== null) return row;
-    if (title !== undefined) {
-      throw new ServiceError(this.notFoundMessage(citation, title), 'not_found');
-    }
-    const [first, ...rest] = this.store.sectionsForCitation(citation, kind);
-    if (first === undefined) {
-      throw new ServiceError(this.notFoundMessage(citation, undefined), 'not_found');
-    }
-    if (rest.length > 0) {
-      const titles = [first, ...rest]
-        .map((row) => row.title)
-        .filter((value, index, all) => all.indexOf(value) === index)
-        .sort((a, b) => a - b);
-      throw new ServiceError(
-        `the citation ${citation} exists in more than one stored title (${titles.join(', ')}) — ` +
-          `name the title you want (e.g. \`title=${titles[0]}\`)`,
-        'invalid_input',
+    let message = this.notFoundMessage(citation, title);
+    if (title === undefined) {
+      const titles = new Set(
+        this.store.sectionsForCitation(citation, kind).map((row) => row.title),
       );
+      for (const otherTitle of titles) {
+        message += `. Title ${otherTitle} holds ${citation}; pass title=${otherTitle}`;
+      }
     }
-    return first;
+    throw new ServiceError(message, 'not_found');
   }
 
   /**
@@ -792,8 +783,7 @@ export class CFRService {
    *
    * The authority is settled by PRECEDENCE: the title the caller names
    * wins; a citation that names its own title (`32 CFR § 70.1`) settles it
-   * next; and an untitled citation tries Title 38 before looking in other
-   * stored titles (see {@link resolveSection}).
+   * next; and an untitled citation reads within Title 38 only.
    */
   getSection(citationInput: string, titleInput?: number | string | undefined): SectionDetail {
     const parsed = citationInputSchema.safeParse(citationInput);
@@ -837,6 +827,7 @@ export class CFRService {
       sourceUrlAtIndexDate: datedSourceUrlFor(row.citation, row.kind, row.issueDate, row.title),
       references: extractReferences(row.text).map((citation) => ({
         citation,
+        // Check availability within the provision's title because cross-title edges are out of scope.
         available: this.store.hasSection(citation, row.title),
       })),
       // Reverse edges keyed by the section's canonical (lowercase) citation —

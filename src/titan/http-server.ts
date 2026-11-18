@@ -403,7 +403,7 @@ function handleSection(
     sendJson(req, res, 400, errorBody('invalid_input', 'malformed URL encoding'));
     return;
   }
-  // Untitled reads try Title 38 first, then look in other stored titles.
+  // Untitled reads are scoped to Title 38.
   const section = service.getSection(citation, url.searchParams.get('title') ?? undefined);
   sendJson(req, res, 200, { ...section }, 'public, max-age=3600', REVALIDATABLE);
 }

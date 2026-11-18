@@ -474,8 +474,8 @@ export function registerTools(
         '"4.125", "§ 4.125", "38 CFR 4.125", or appendix names like "Appendix A to Part 4". ' +
         'Returns heading, hierarchy path, issue date, the CFR title the provision belongs to, ' +
         'and an ecfr.gov permalink. ' +
-        'A citation without a title resolves in Title 38 first. If absent there, ' +
-        'it resolves in the only other title that holds it, or reports the titles if ambiguous. ' +
+        'A read without a title in the request or citation checks Title 38 only. ' +
+        'A miss returns not_found with title hints for any other stored matches. ' +
         `Also returns \`citationSupport\` — Structural Citation Support diagnostics: how many distinct ` +
         'sections in this title cite this one, overall and narrowed to the same part and subject group. ' +
         'That vector is diagnostic output only — it never affects search ranking or candidate sets. ' +

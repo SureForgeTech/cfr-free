@@ -155,16 +155,29 @@ describe('the title-scoped search', () => {
   });
 
   it.each([
-    { query: '32 CFR 70.1', title: undefined },
-    { query: '38 CFR 70.1', title: 32 },
-  ])('does not pin $query in scope $title', (input) => {
+    { query: '32 CFR 70.1', title: undefined, citedTitle: 32 },
+    { query: '38 CFR 70.1', title: 32, citedTitle: 38 },
+  ])(
+    'suggests the cited title without pinning $query in scope $title',
+    ({ citedTitle, ...input }) => {
+      const temp = openMultiTitleStore();
+      try {
+        const { hits, notice } = serviceOver(temp).search(input);
+        expect(hits.filter((hit) => hit.direct)).toEqual([]);
+        expect(notice).toContain(`Pass title=${citedTitle}`);
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
+
+  it('preserves the stale-index warning alongside the title guidance', () => {
     const temp = openMultiTitleStore();
     try {
-      expect(
-        serviceOver(temp)
-          .search(input)
-          .hits.filter((hit) => hit.direct),
-      ).toEqual([]);
+      temp.store.setMeta('synced_at', '2020-01-01T00:00:00.000Z');
+      const { notice } = serviceOver(temp).search({ query: '32 CFR 70.1' });
+      expect(notice).toContain('local index is stale');
+      expect(notice).toContain('Pass title=32');
     } finally {
       temp.cleanup();
     }
@@ -173,9 +186,10 @@ describe('the title-scoped search', () => {
   it.each([32, 'all'] as const)('pins only the cited title in scope %s', (title) => {
     const temp = openMultiTitleStore();
     try {
-      const { hits } = serviceOver(temp).search({ query: '32 CFR 70.1', title });
+      const { hits, notice } = serviceOver(temp).search({ query: '32 CFR 70.1', title });
       expect(hits[0]).toMatchObject({ title: 32, citation: '70.1', direct: true });
       expect(hits.filter((hit) => hit.direct)).toHaveLength(1);
+      expect(notice).toBeNull();
     } finally {
       temp.cleanup();
     }
@@ -214,7 +228,7 @@ describe('the title-scoped search', () => {
 });
 
 describe('the title-scoped section read', () => {
-  it('prefers Title 38 for an untitled citation held by both titles', () => {
+  it('reads Title 38 for an untitled citation held by both titles', () => {
     const temp = openMultiTitleStore();
     try {
       expect(serviceOver(temp).getSection('70.1')).toMatchObject({
@@ -226,7 +240,7 @@ describe('the title-scoped section read', () => {
     }
   });
 
-  it('names the titles when the fallback citation is ambiguous', () => {
+  it('returns not_found with hints for every other title holding an untitled citation', () => {
     const temp = openMultiTitleStore();
     try {
       temp.store.replaceTitleWithBaseline(
@@ -237,7 +251,12 @@ describe('the title-scoped section read', () => {
         () => undefined,
       );
       expect(() => serviceOver(temp).getSection('3.12')).toThrow(
-        /exists in more than one stored title \(32, 33\)/,
+        expect.objectContaining({
+          code: 'not_found',
+          message: expect.stringMatching(
+            /Title 32 holds 3\.12; pass title=32.*Title 33 holds 3\.12; pass title=33/,
+          ),
+        }),
       );
     } finally {
       temp.cleanup();
@@ -274,12 +293,17 @@ describe('the title-scoped section read', () => {
     }
   });
 
-  it('serves a citation only ONE title holds, without a title parameter', () => {
+  it('requires an explicit title to read a citation held only in Title 32', () => {
     const temp = openMultiTitleStore();
     try {
-      const section = serviceOver(temp).getSection('3.12');
-      expect(section.title).toBe(32);
-      expect(section.heading).toBe('Character of discharge.');
+      const service = serviceOver(temp);
+      expect(() => service.getSection('70.2')).toThrow(
+        expect.objectContaining({
+          code: 'not_found',
+          message: expect.stringContaining('Title 32 holds 70.2; pass title=32'),
+        }),
+      );
+      expect(service.getSection('70.2', 32)).toMatchObject({ citation: '70.2', title: 32 });
     } finally {
       temp.cleanup();
     }
@@ -498,6 +522,22 @@ describe('the HTTP surface', () => {
       expect(await response.json()).toMatchObject({
         title: 38,
         heading: 'Veteran discharge procedures.',
+      });
+    } finally {
+      await server.close();
+      temp.cleanup();
+    }
+  });
+
+  it('returns HTTP 404 with title guidance for an untitled citation missing from Title 38', async () => {
+    const temp = openMultiTitleStore();
+    const server = await serve(temp);
+    try {
+      const response = await fetch(`${server.url}/api/v1/sections/70.2`);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({
+        error: 'not_found',
+        message: expect.stringContaining('Title 32 holds 70.2; pass title=32'),
       });
     } finally {
       await server.close();

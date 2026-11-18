@@ -378,7 +378,7 @@ paths:
       summary: Full text of one section or appendix
       responses:
         '200':
-          description: 'Markdown + text + metadata + cross-references, and the CFR title the provision belongs to. `title` names the title to read within; an untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it (400 invalid_input, the message names the titles). Cache-Control: public, max-age=3600.'
+          description: 'Markdown + text + metadata + cross-references, and the CFR title the provision belongs to. With no title in the request or citation text, the read checks only Title 38. A miss returns 404 not_found with title=N guidance for any other stored titles holding the citation. Cache-Control: public, max-age=3600.'
           headers:
             ETag:
               description: 'Strong validator over the response payload — a quoted sha256 of the exact response bytes ("sha256-<hex>", src/titan/http-server.ts#etagFor). Send it back as If-None-Match to revalidate.'
@@ -407,7 +407,7 @@ paths:
         - name: title
           in: query
           required: false
-          description: 'The CFR title to read within — a title number (e.g. 32). An untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it; `all` is a search-only scope and is refused here.'
+          description: 'The CFR title to read within — a title number (e.g. 32). If omitted, the read uses the title named in the citation or defaults to Title 38. A miss returns 404 not_found. On an untitled miss, the message names any other stored titles holding the citation and suggests passing title=N. The value `all` is reserved for searches.'
           schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
     head:
       summary: Headers-only section probe
@@ -435,7 +435,7 @@ paths:
         - name: title
           in: query
           required: false
-          description: 'The CFR title to read within — a title number (e.g. 32). An untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it; `all` is a search-only scope and is refused here.'
+          description: 'The CFR title to read within — a title number (e.g. 32). If omitted, the read uses the title named in the citation or defaults to Title 38. A miss returns 404 not_found. On an untitled miss, the message names any other stored titles holding the citation and suggests passing title=N. The value `all` is reserved for searches.'
           schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
   /api/v1/browse:
     # source: src/titan/http-server.ts#dispatch (router), handleBrowse (revalidatable send)
@@ -862,7 +862,7 @@ components:
         notice:
           {
             type: [string, 'null'],
-            description: 'Stale-index warning. NOTE: `notice` is NOT one field with one meaning across the API — on the search and section responses it is the stale-index warning, while on the diff and redline responses it is the date-semantics disclaimer. A client that renders a generic `notice` must not generalise from one to the other.',
+            description: 'Contains a stale-index warning when applicable. If the query is a citation naming a title outside the search scope, it also suggests passing title=N. Null when neither applies.',
           }
         matchedTerms:
           type: array
