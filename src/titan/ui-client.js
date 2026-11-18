@@ -186,9 +186,9 @@
     return '#/section/' + encodeURIComponent(citation);
   }
 
-  function appendCitationLink(listItem, citation) {
+  function appendCitationLink(listItem, citation, title) {
     const link = document.createElement('a');
-    link.href = sectionHref(citation);
+    link.href = sectionHref(title + ' CFR ' + citation);
     link.textContent = citation;
     listItem.appendChild(link);
   }
@@ -718,7 +718,7 @@
       const reference = references[i];
       const item = document.createElement('li');
       if (reference.available === true) {
-        appendCitationLink(item, String(reference.citation));
+        appendCitationLink(item, String(reference.citation), section.title);
       } else {
         item.textContent = String(reference.citation) + ' (not in this copy)';
       }
@@ -732,7 +732,7 @@
     const citedBy = Array.isArray(section.citedBy) ? section.citedBy : [];
     for (let j = 0; j < citedBy.length; j += 1) {
       const backItem = document.createElement('li');
-      appendCitationLink(backItem, String(citedBy[j]));
+      appendCitationLink(backItem, String(citedBy[j]), section.title);
       sectionCitedBy.appendChild(backItem);
     }
     if (citedBy.length === 0) sectionCitedBy.appendChild(el('li', '', 'None indexed.'));
@@ -748,14 +748,22 @@
    */
   function fillCitationBlock(section) {
     const citation = String(section.citation);
-    const kind = String(section.kind);
-    const display = kind === 'appendix' ? citation : '38 C.F.R. § ' + citation;
+    const title = section.title;
+    const authority = title + ' CFR';
+    let display;
+    if (section.kind === 'appendix') {
+      display = title === 38 ? citation : authority + ' ' + citation;
+    } else {
+      display = (title === 38 ? '38 C.F.R.' : authority) + ' § ' + citation;
+    }
     const lines = [];
     lines.push(display);
     if (typeof section.heading === 'string' && section.heading !== '') {
       lines.push(section.heading);
     }
-    lines.push('Source: 38 CFR ' + citation + ' (issue date ' + String(section.issueDate) + ')');
+    lines.push(
+      'Source: ' + authority + ' ' + citation + ' (issue date ' + String(section.issueDate) + ')',
+    );
     if (typeof section.sourceUrlAtIndexDate === 'string' && section.sourceUrlAtIndexDate !== '') {
       lines.push('Verify at the indexed revision: ' + section.sourceUrlAtIndexDate);
     }

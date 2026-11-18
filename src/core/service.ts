@@ -45,13 +45,12 @@ export const SEARCH_QUERY_MAX_LENGTH = 200;
  * The wire forms differ — an MCP client sends a number, an HTTP client a
  * query string, a CLI user a flag — so the SERVICE owns the parse: every
  * surface hands the raw value over and this schema decides what it means.
- * A numeric STRING is accepted (that is what a query string carries), and
+ * A canonical decimal STRING is accepted (that is what a query string carries), and
  * `all` is accepted only where the surface allows it (a search); a section
  * read refuses it afterwards, with a message that says why.
  */
 const titleScopeSchema = z.preprocess(
-  (value) =>
-    typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value.trim()) : value,
+  (value) => (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value) ? Number(value) : value),
   z.union([z.literal('all'), z.number().int().min(1).max(50)]),
 );
 
@@ -457,11 +456,11 @@ function kindForCitation(citation: string): 'section' | 'appendix' {
  * frozen contract — SPEC §6 and the tests that pin it. Every other title
  * uses the plain form (`32 CFR § 70.1`). The display form must NAME the
  * authority, because two authorities are never blended into one unlabeled
- * list (multi-title design, 2026-11-13). An appendix carries no title in
- * its display form: its name identifies it within its title.
+ * list (multi-title design, 2026-11-13). Title 38 appendices keep their
+ * bare names. Other appendices carry their title prefix.
  */
 function displayCitation(kind: 'section' | 'appendix', citation: string, title: number): string {
-  if (kind === 'appendix') return citation;
+  if (kind === 'appendix') return title === DEFAULT_TITLE ? citation : `${title} CFR ${citation}`;
   if (title === DEFAULT_TITLE) return `38 C.F.R. § ${citation}`;
   return `${title} CFR § ${citation}`;
 }
@@ -518,14 +517,15 @@ function excerpt(text: string): string {
 }
 
 /** Stale-index warning shared by search and section reads. */
-function noticeFor(status: IndexStatus): string | null {
+function noticeFor(status: IndexStatus, scope: TitleScope): string | null {
   if (!status.stale) return null;
+  const title = scope === 'all' ? '<title>' : scope;
   return (
     `local index is stale (issue date ${status.issueDate ?? 'unknown'}, ` +
     `synced ${status.syncedAt ?? 'never'}, limit ${status.maxAgeDays} days) — ` +
     'verify against the current eCFR before relying on this text; for the version ' +
     'in force on a past date (e.g. the date of claim) use the eCFR point-in-time ' +
-    'URL /on/<YYYY-MM-DD>/title-38/section-<citation>'
+    `URL /on/<YYYY-MM-DD>/title-${title}/section-<citation>`
   );
 }
 
@@ -605,7 +605,7 @@ export class CFRService {
       hits,
       indexIssueDate: status.issueDate,
       indexStale: status.stale,
-      notice: [noticeFor(status), scopeNotice].filter(Boolean).join('. ') || null,
+      notice: [noticeFor(status, scope), scopeNotice].filter(Boolean).join('. ') || null,
       matchedTerms: groundingTerms.matchedTerms,
       unmatchedTerms: groundingTerms.unmatchedTerms,
     };
@@ -837,7 +837,7 @@ export class CFRService {
       // Citation support uses the same title-scoped edges as citedBy.
       citationSupport: this.store.citationSupport(row.citation, row.title),
       indexStale: status.stale,
-      notice: noticeFor(status),
+      notice: noticeFor(status, row.title),
     };
   }
 

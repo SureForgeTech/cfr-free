@@ -491,7 +491,8 @@ export function registerTools(
           .max(50)
           .optional()
           .describe(
-            'the CFR title to read within; untitled citations try Title 38 before other titles',
+            'the CFR title to read within. If omitted, a citation that names a title reads that title. ' +
+              'An untitled citation reads Title 38 only.',
           ),
       },
       outputSchema: sectionOutputSchema,

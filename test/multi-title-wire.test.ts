@@ -225,6 +225,44 @@ describe('the title-scoped search', () => {
       temp.cleanup();
     }
   });
+
+  it('accepts only canonical title scopes in strings', () => {
+    const temp = openMultiTitleStore();
+    try {
+      const service = serviceOver(temp);
+      const query = 'discharge procedures';
+      for (const title of ['1', '9', '10', '32', '49', '50', 'all']) {
+        expect(() => service.search({ query, title })).not.toThrow();
+      }
+      for (const title of ['0', '01', '032', ' 32', '32 ', '32\n', '51', 'ALL']) {
+        expect(() => service.search({ query, title })).toThrow(
+          expect.objectContaining({ code: 'invalid_input' }),
+        );
+      }
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('uses the search scope or provision title in stale notices', () => {
+    const temp = openMultiTitleStore();
+    try {
+      temp.store.setMeta('synced_at', '2020-01-01T00:00:00Z');
+      const service = serviceOver(temp);
+      const query = 'discharge procedures';
+      expect(service.search({ query, title: 32 }).notice).toContain(
+        '/on/<YYYY-MM-DD>/title-32/section-<citation>',
+      );
+      expect(service.search({ query, title: 'all' }).notice).toContain(
+        '/on/<YYYY-MM-DD>/title-<title>/section-<citation>',
+      );
+      expect(service.getSection('32 CFR 70.1').notice).toContain(
+        '/on/<YYYY-MM-DD>/title-32/section-<citation>',
+      );
+    } finally {
+      temp.cleanup();
+    }
+  });
 });
 
 describe('the title-scoped section read', () => {
@@ -366,6 +404,30 @@ describe('the display form and the source URLs', () => {
       );
       // The part title comes from the hit's OWN title's structure tree.
       expect(hit?.partTitle).toBe('Discharge Review Board Procedures');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('names the title in a non-38 appendix display citation and reads it back', () => {
+    const temp = openMultiTitleStore();
+    try {
+      const citation = 'Appendix A to Part 70';
+      temp.store.replaceTitleWithBaseline(
+        32,
+        [...TITLE_32_SECTIONS, makeSection({ citation, kind: 'appendix', part: '70' })],
+        ISSUE_DATE,
+        {},
+        () => undefined,
+      );
+      const service = serviceOver(temp);
+      const hit = service.search({ query: citation, title: 32 }).hits[0];
+      expect(hit?.citationDisplay).toBe('32 CFR Appendix A to Part 70');
+      expect(service.getSection(hit?.citationDisplay ?? '')).toMatchObject({
+        citation,
+        kind: 'appendix',
+        title: 32,
+      });
     } finally {
       temp.cleanup();
     }
