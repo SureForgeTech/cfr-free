@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, loadConfig } from './config.js';
+import { ConfigError, loadConfig, type AppConfig } from './config.js';
 import { runMcpCommand } from './commands/mcp.js';
 import { runMcpInstallCommand } from './commands/mcp-install.js';
 import { runServeCommand } from './commands/serve.js';
@@ -19,12 +19,14 @@ import {
   runSearchCommand,
 } from './commands/search.js';
 import { upstreamFailure } from './commands/upstream-guidance.js';
+import { formatVerifyReport, runVerifyCommand } from './commands/verify.js';
 import {
   SEARCH_QUERY_MAX_LENGTH,
   SEARCH_QUERY_MIN_LENGTH,
   validateSearchInput,
 } from './core/service.js';
 import { ServiceError } from './core/errors.js';
+import type { SyncReport } from './core/sync.js';
 import { CommandError, EXIT } from './exit-codes.js';
 import { createLogger, type Logger } from './logger.js';
 import { VERSION } from './version.js';
@@ -57,6 +59,8 @@ Usage:
   cfr-free demo           Instant offline demo server with core rating schedules
   cfr-free export <path> [jsonl|md]  Snapshot the index (sqlite default;
                                      jsonl/md for pipeline ingestion)
+  cfr-free verify [snapshot]  Verify the index or a stored snapshot: schema
+                              check, provision counts, issue date, corpus receipt
   cfr-free help           Show this help
   cfr-free version        Show the version
 
@@ -161,6 +165,7 @@ const KNOWN_COMMANDS = new Set([
   'search',
   'serve',
   'export',
+  'verify',
   'help',
   'version',
 ]);
@@ -187,6 +192,7 @@ export type Command =
   | 'search'
   | 'serve'
   | 'export'
+  | 'verify'
   | 'help'
   | 'version';
 
@@ -227,6 +233,7 @@ export type ParsedCommand =
       readonly exportPath: string;
       readonly exportFormat?: 'jsonl' | 'md';
     }
+  | { readonly command: 'verify'; readonly snapshot?: string | undefined }
   | { readonly command: 'diff'; readonly fromDate: string; readonly toDate?: string }
   | { readonly command: 'historical'; readonly atDate: string; readonly citation: string }
   | {
@@ -259,6 +266,7 @@ export type ParsedCommand =
         | 'search'
         | 'help'
         | 'mcp-install'
+        | 'verify'
         | 'vibe-rules'
         | 'vibe-prompt'
         | 'vibe-ui'
@@ -284,6 +292,17 @@ function parseExportTarget(rest: readonly string[]): ParsedCommand {
   return format === undefined
     ? { command: 'export', exportPath: target }
     : { command: 'export', exportPath: target, exportFormat: format };
+}
+
+/** Validate `verify`'s optional snapshot path. */
+function parseVerifyArgs(rest: readonly string[]): ParsedCommand {
+  const snapshot = rest[0];
+  if (rest.length > 1 || (snapshot !== undefined && snapshot.startsWith('-'))) {
+    throw new CliError(
+      'verify takes at most one snapshot path (e.g. `cfr-free verify ./backup.sqlite`)',
+    );
+  }
+  return snapshot === undefined ? { command: 'verify' } : { command: 'verify', snapshot };
 }
 
 /** Validate `diff`'s required from-date and optional to-date. */
@@ -701,6 +720,7 @@ const ARG_PARSERS = new Map<string, (rest: readonly string[]) => ParsedCommand>(
   ['vibe-prompt', (rest) => parseVibeArgs(['prompt', ...rest])],
   ['serve', parseServeCommandArgs],
   ['sync', parseSyncCommandArgs],
+  ['verify', parseVerifyArgs],
   ['demo', parseDemoCommandArgs],
 ]);
 
@@ -865,6 +885,54 @@ function runVibeCoderCommand(parsed: ParsedCommand, io: MainIO): boolean {
   return false;
 }
 
+/**
+ * The `sync` command's summary line: what the rebuild changed, and the
+ * receipt it recorded.
+ *
+ * The wording lives in one function of the report, so the command dispatch
+ * stays a dispatch.
+ */
+function formatSyncSummary(report: SyncReport): string {
+  const { changed, added, removed } = report.changes;
+  const changes =
+    changed + added + removed > 0
+      ? `${changed} changed, ${added} added, ${removed} removed`
+      : 'no provision changes';
+  // Provisions with eCFR graphics (the rating tables) are NOT textually
+  // complete — the count is stated so a matching section count never
+  // reads as complete coverage (review finding P1-01).
+  const images =
+    report.imageContentSections > 0
+      ? `; ${report.imageContentSections} provisions contain image content not included`
+      : '';
+  return (
+    `synced ${report.sections} sections + ${report.appendices} appendices ` +
+    `(issue date ${report.issueDate}; ${changes}${images}; ${report.durationMs} ms; ` +
+    `corpus hash ${report.corpusHash})\n`
+  );
+}
+
+/**
+ * The `verify` command: verify the index (or the named snapshot) and
+ * report what it found.
+ *
+ * A readable index is a success (exit 0) INCLUDING an absent receipt — the
+ * report says plainly that the rows' provenance cannot be concluded. A
+ * recorded receipt that MISMATCHES the current rows is the command's
+ * finding ("this is not the copy the receipt describes"): the report is
+ * still printed, and the exit code is 1 (EXIT.ERROR — no new exit code).
+ */
+function runVerifyDispatch(
+  snapshot: string | undefined,
+  config: AppConfig,
+  logger: Logger,
+  io: MainIO,
+): number {
+  const report = runVerifyCommand(config, logger, snapshot);
+  io.out(formatVerifyReport(report));
+  return report.receipt === 'mismatch' ? EXIT.ERROR : EXIT.OK;
+}
+
 /** CLI entry point. Returns the process exit code. */
 export async function main(argv: readonly string[], io: MainIO): Promise<number> {
   // The logger is created from the config, which is loaded inside the try: a
@@ -887,23 +955,7 @@ export async function main(argv: readonly string[], io: MainIO): Promise<number>
 
     if (command === 'sync') {
       const report = await runSyncCommand(config, logger);
-      const { changed, added, removed } = report.changes;
-      const changes =
-        changed + added + removed > 0
-          ? `${changed} changed, ${added} added, ${removed} removed`
-          : 'no provision changes';
-      // Provisions with eCFR graphics (the rating tables) are NOT textually
-      // complete — the count is stated so a matching section count never
-      // reads as complete coverage (review finding P1-01).
-      const images =
-        report.imageContentSections > 0
-          ? `; ${report.imageContentSections} provisions contain image content not included`
-          : '';
-      io.out(
-        `synced ${report.sections} sections + ${report.appendices} appendices ` +
-          `(issue date ${report.issueDate}; ${changes}${images}; ${report.durationMs} ms; ` +
-          `corpus hash ${report.corpusHash})\n`,
-      );
+      io.out(formatSyncSummary(report));
       return 0;
     }
     if (command === 'export') {
@@ -913,6 +965,9 @@ export async function main(argv: readonly string[], io: MainIO): Promise<number>
           `(${report.bytes} bytes) to ${report.path}\n`,
       );
       return 0;
+    }
+    if (command === 'verify') {
+      return runVerifyDispatch(parsed.snapshot, config, logger, io);
     }
     if (command === 'diff') {
       // A diff WITH results is a success: exit 0 regardless of size. Errors

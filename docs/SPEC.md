@@ -16,7 +16,7 @@ A self-hosted **38 CFR data service ("Titan")** plus an **MCP server**, TypeScri
 Single npm package, one CLI (`cfr-free`) with subcommands (default: `mcp`):
 
 ```
-mcp  sync  diff  redline  historical  search  serve  export  help  version
+mcp  sync  diff  redline  historical  search  serve  export  verify  help  version
 ```
 
 Signatures and one-line purposes live in `USAGE` (`src/cli.ts`); `help`
@@ -47,7 +47,7 @@ src/
   version.ts          package-version resolution seam
   commands/           per-subcommand entrypoints (diff, export,
                       historical, mcp, mcp-install, redline, search,
-                      serve, sync, vibe, vibe-ui)
+                      serve, sync, verify, vibe, vibe-ui)
                       plus two internal helpers (ensure-index,
                       refresh-scheduler)
   core/
@@ -279,6 +279,23 @@ with a key held outside the index is a design change, not a property of the
 current one. Consumers that quote regulation text in a benefits-adjudication
 context must treat the receipt as a freshness and corruption check, never as
 provenance the upstream attests to.
+
+**Verifying a copy.** `cfr-free verify [snapshot]` recomputes the receipt
+from a file's own Title 38 rows (`snapshotTextHashes` + `corpusHash`) and
+compares it with the `corpus_hash` the file records: `match`, `mismatch`, or
+`absent` — no receipt recorded, so the file is readable and usable but
+whether its rows are the ones a sync wrote CANNOT be concluded either way.
+The report also states the schema check (`PRAGMA quick_check`, run by the
+open), the per-kind provision counts and the recorded issue date
+(`title.38.issue_date`, the legacy `issue_date` key as fallback). The file is
+opened through the strict read-only path — a verification never creates,
+repairs or rewrites the file it reads, so it can be run on evidence, and a
+stored snapshot verifies against the receipt recorded with ITS rows, not
+against the live index's. Exit semantics, reusing the existing exit codes
+(no new code): `0` for a readable index, INCLUDING an absent receipt;
+`1` when the recorded receipt does not match the current rows; `2` (the
+existing usage/invalid-input mapping) for a missing, unreadable or non-index
+input.
 
 ### 4.1 The candidate set and the ranking order
 

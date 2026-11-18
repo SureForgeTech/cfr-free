@@ -799,6 +799,22 @@ export class Store {
   }
 
   /**
+   * Per-kind provision counts for one title (default {@link DEFAULT_TITLE})
+   * — the verification read path. `SUM(kind = …)` yields NULL for a title
+   * with no rows, so the counts fall back to 0.
+   */
+  countProvisions(title: number = DEFAULT_TITLE): { sections: number; appendices: number } {
+    const row = this.stmt(
+      `SELECT SUM(kind = 'section') AS sections, SUM(kind = 'appendix') AS appendices
+       FROM sections WHERE title = ?`,
+    ).get(title) as Record<string, unknown> | undefined;
+    return {
+      sections: Number(row?.['sections'] ?? 0),
+      appendices: Number(row?.['appendices'] ?? 0),
+    };
+  }
+
+  /**
    * Every indexed row (section + appendix) in citation order — the export
    * read path. Same SELECT/row mapping as {@link getSection}, applied to
    * the whole table.

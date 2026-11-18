@@ -46,6 +46,10 @@ keys, no telemetry — one Node process and one SQLite file.
   for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
   SQLite snapshots offline — added, removed and changed provisions with dated
   source links and bounded text-change hunks.
+- **Verifiable copies**: `cfr-free verify [snapshot]` checks that a local index
+  or a stored snapshot opens cleanly and that the corpus receipt it records
+  still describes its own Title 38 rows — offline, and without touching the
+  file it reads.
 
 ## Requirements
 
@@ -218,6 +222,44 @@ somewhere else:
 ```bash
 CFR_INDEX_PATH=/tmp/cfr-smoke.sqlite node dist/cli.js sync   # ~5 s, then delete the file
 ```
+
+### Verifying an index or a snapshot
+
+`cfr-free verify` answers two questions about a local file: is it usable, and
+does the corpus receipt it records still describe its own Title 38 rows? It
+reads only that file — no network, no eCFR fetch — and never creates,
+repairs or rewrites it.
+
+```bash
+cfr-free verify                     # the index at CFR_INDEX_PATH
+cfr-free verify ./backup.sqlite     # a stored snapshot instead
+```
+
+```
+verified /home/you/.cfr-free/index.sqlite
+  schema: ok (quick_check passed)
+  provisions: 2953 sections + 17 appendices (Title 38)
+  issue date: 2026-10-16
+  corpus receipt: match — the recorded hash equals the receipt recomputed from the current Title 38 rows
+  note: a receipt over this index that detects ACCIDENTAL corruption of the local copy — not a signature, and no claim about the upstream text
+```
+
+The receipt is the sha256 over the file's own per-provision content hashes
+that every rebuild records (`meta.corpus_hash`), so recomputing it from the
+rows the file holds now and comparing detects a copy whose rows moved under
+its receipt — a truncated row, a half-written sync, an edited file. It is
+also what an **absent** receipt means: a file written before the receipt
+existed, or by a build that did not write one, is readable and usable, but
+nothing can be concluded about whether its rows are the ones a sync wrote.
+
+| Situation                                                | Exit | Meaning                                                                            |
+| -------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------- |
+| The file opens, its schema is intact                     | `0`  | The index is usable — including an absent receipt, which the report states plainly |
+| The recorded receipt does not match the rows             | `1`  | The file is readable but is not the copy its receipt describes                     |
+| The path is missing, unreadable, or not a cfr-free index | `2`  | Nothing was verified — the path is the reader's mistake, not a defect in the file  |
+
+No new exit code is introduced: `verify` reuses the tool's existing contract
+(`2` for a usage error, `1` for a failure).
 
 ### Docker
 
@@ -491,7 +533,8 @@ MCP's JSON-RPC protocol.
 | `5`  | Refused to overwrite an existing export file (remove it or pick another path) |
 
 Scripts can branch on these — e.g. retry later on `3`, pick another port
-on `4`.
+on `4`. `cfr-free verify` adds one meaning to `1`: the file opened, but the
+corpus receipt it records does not match its own rows.
 
 ## Development
 
@@ -529,7 +572,7 @@ eCFR API ──sync──▶ SQLite (sections + FTS5 + structure meta)
 - `src/mcp/` — MCP server and tool registrations
 - `src/titan/` — HTTP JSON API
 - `src/commands/` — one entrypoint per subcommand: `mcp`, `sync`, `diff`,
-  `redline`, `historical`, `search`, `serve`, `export` (`help` and
+  `redline`, `historical`, `search`, `serve`, `export`, `verify` (`help` and
   `version` dispatch from `src/cli.ts`)
 - `docs/SPEC.md` — the design authority; `docs/research/delivery-log.md` —
   the review dispositions and the closed delivery record
