@@ -118,6 +118,18 @@ const sectionOutputSchema = z.object({
   sourceUrlAtIndexDate: z.string(),
   references: z.array(z.object({ citation: z.string(), available: z.boolean() })),
   citedBy: z.array(z.string()),
+  citationSupport: z
+    .object({
+      subjectGroup: z
+        .number()
+        .describe('distinct citing sections in the same part and subject group'),
+      part: z.number().describe('distinct citing sections in the same part'),
+      total: z.number().describe('distinct citing sections overall (self-citations excluded)'),
+    })
+    .describe(
+      'Structural Citation Support diagnostics — distinct citing sections, narrowed by shared structure. ' +
+        'Diagnostic output only: never a search-ranking input and never a candidate-set filter.',
+    ),
   indexStale: z.boolean(),
   notice: z.string().nullable(),
   truncated: z
@@ -371,9 +383,9 @@ export function registerTools(
         '`kind` to restrict results to one provision kind ("section" or "appendix"), and ' +
         '`chapter` to scope to one chapter by its Roman-numeral identifier (e.g. "I"; exact, case-sensitive). ' +
         'Follow up with get_section to read a hit in full. ' +
-        'If the query itself is a citation (e.g. "4.130" or "38 CFR 4.16"), that exact ' +
-        'section is pinned to the top of page 1 (totals include the pin on every page) ' +
-        "and marked `direct: true` — the reliable client signal; the pinned hit's " +
+        'If the query itself is a citation (e.g. "4.130" or "38 CFR 4.16"), matching ' +
+        'sections in scope are pinned to the top of page 1 (totals include pins on every page) ' +
+        "and marked `direct: true`. A citation that names a title pins only that title's section. The pinned hit's " +
         '`inResults` flag reports whether it also matched the ranked results. ' +
         'Quoted spans (e.g. "exact regulatory language") are emitted as FTS5 phrase queries — the last token gets a prefix wildcard (so "language" also matches "languages"); earlier tokens are matched exactly. ' +
         'Hits are ranked by LEXICAL OVERLAP with the query, not by legal authority: the first hit is the provision sharing the most words with the query, which is often not the provision that governs the question. ' +
@@ -462,10 +474,11 @@ export function registerTools(
         '"4.125", "§ 4.125", "38 CFR 4.125", or appendix names like "Appendix A to Part 4". ' +
         'Returns heading, hierarchy path, issue date, the CFR title the provision belongs to, ' +
         'and an ecfr.gov permalink. ' +
-        'The citation is resolved across every stored title when `title` is not ' +
-        'given: one that only ONE title holds is served as it always was, and one that ' +
-        'MORE THAN ONE title holds is refused as ambiguous (the error names the titles) ' +
-        "rather than answered with the wrong authority's text. " +
+        'A citation without a title resolves in Title 38 first. If absent there, ' +
+        'it resolves in the only other title that holds it, or reports the titles if ambiguous. ' +
+        `Also returns \`citationSupport\` — Structural Citation Support diagnostics: how many distinct ` +
+        'sections in this title cite this one, overall and narrowed to the same part and subject group. ' +
+        'That vector is diagnostic output only — it never affects search ranking or candidate sets. ' +
         `The body is capped at ${PROVISION_TEXT_CAP} characters; a body that was cut sets \`truncated: true\`, ` +
         'and the truncated text is incomplete — read the rest from the sourceUrl. ' +
         UNTRUSTED_DATA_NOTE,
@@ -478,8 +491,7 @@ export function registerTools(
           .max(50)
           .optional()
           .describe(
-            'the CFR title to read within; without it the citation is resolved across every ' +
-              'stored title and refused when more than one of them holds it',
+            'the CFR title to read within; untitled citations try Title 38 before other titles',
           ),
       },
       outputSchema: sectionOutputSchema,

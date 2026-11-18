@@ -234,6 +234,18 @@ export interface SectionDetail {
    * Sorted lexicographically; empty array when nothing cites it.
    */
   readonly citedBy: ReadonlyArray<string>;
+  /**
+   * Structural Citation Support (SCS) diagnostics — the query-independent
+   * vector (G, P, I) from docs/research/ranking-instrument-design-2026-11-01.md
+   * §3.1: distinct citing sections overall (`total`), restricted to the same
+   * part (`part`), and further to the same subject group (`subjectGroup`).
+   * Diagnostic output only: search ranking and candidate sets never read it.
+   */
+  readonly citationSupport: {
+    readonly subjectGroup: number;
+    readonly part: number;
+    readonly total: number;
+  };
   /** True when the local index backing this read is older than CFR_MAX_AGE_DAYS. */
   readonly indexStale: boolean;
   /** Warning to surface when the index is stale; null otherwise. */
@@ -597,11 +609,8 @@ export class CFRService {
    * adjudicators paste `38 CFR 4.130(a)` constantly, and keyword noise above
    * the exact section would be a correctness failure.
    *
-   * Under a single-title scope the pin is that title's copy. Under `all`,
-   * EVERY title holding the citation is pinned, each labeled with its own
-   * title: a cross-title search returns every matching hit, labeled — the
-   * ambiguity rule belongs to the exact-pin ENDPOINT (the read), where one
-   * citation could otherwise be answered with the wrong authority's text.
+   * A titled citation pins only its own title's copy and only if that title
+   * is in scope. An untitled citation pins every copy in scope.
    *
    * Computed on every page so the pin-adjusted `total` stays consistent
    * across the pagination sequence; only page 1 prepends the hits
@@ -618,18 +627,17 @@ export class CFRService {
     scope: TitleScope,
   ): (PresentedHit & { readonly inResults: boolean })[] {
     const normalized = parseCitation(stripParagraphSuffix(query));
-    if (normalized === null) return [];
-    // Under `all`, a citation that NAMES its title pins that title's copy
-    // only — the citation named its authority. An untitled citation pins
-    // every title that holds it, each labeled with its own.
+    if (
+      normalized === null ||
+      (scope !== 'all' && normalized.title !== undefined && normalized.title !== scope)
+    ) {
+      return [];
+    }
+    const pinScope = normalized.title ?? scope;
     const rows =
-      scope === 'all'
-        ? normalized.title === undefined
-          ? this.store.sectionsForCitation(normalized.citation, normalized.kind)
-          : [this.store.getSection(normalized.citation, normalized.kind, normalized.title)].filter(
-              (row): row is SectionRow => row !== null,
-            )
-        : [this.store.getSection(normalized.citation, normalized.kind, scope)].filter(
+      pinScope === 'all'
+        ? this.store.sectionsForCitation(normalized.citation, normalized.kind)
+        : [this.store.getSection(normalized.citation, normalized.kind, pinScope)].filter(
             (row): row is SectionRow => row !== null,
           );
     const pins: (PresentedHit & { readonly inResults: boolean })[] = [];
@@ -725,8 +733,7 @@ export class CFRService {
   /**
    * The title a read names, parsed by the same rule the search uses.
    *
-   * `undefined` means the read named none — the read then resolves the
-   * citation across every stored title (see {@link resolveSection}).
+   * `undefined` means the read named no title (see {@link resolveSection}).
    */
   private parseTitle(value: number | string | undefined): TitleScope | undefined {
     const parsed = titleInputSchema.safeParse({ title: value });
@@ -738,11 +745,9 @@ export class CFRService {
    * The provision a citation names, resolved against the titles the store
    * holds.
    *
-   * A NAMED title resolves within that title only. NO title resolves across
-   * every stored title: a citation that exists in ONE title is unambiguous
-   * and is served as it always was; a citation that exists in TWO titles is
-   * an AMBIGUITY the caller must settle — an error naming the titles — never
-   * a silent Title-38 assumption (multi-title design, 2026-11-13).
+   * A named title resolves within that title only. An untitled read tries
+   * Title 38 first, then accepts a unique match or reports the titles when
+   * multiple other titles hold the citation.
    *
    * `all` is refused: a read answers with ONE provision, and "every
    * stored title" would be a search scope, not an answer.
@@ -759,12 +764,10 @@ export class CFRService {
         'invalid_input',
       );
     }
+    const row = this.store.getSection(citation, kind, title ?? DEFAULT_TITLE);
+    if (row !== null) return row;
     if (title !== undefined) {
-      const row = this.store.getSection(citation, kind, title);
-      if (row === null) {
-        throw new ServiceError(this.notFoundMessage(citation, title), 'not_found');
-      }
-      return row;
+      throw new ServiceError(this.notFoundMessage(citation, title), 'not_found');
     }
     const [first, ...rest] = this.store.sectionsForCitation(citation, kind);
     if (first === undefined) {
@@ -789,9 +792,8 @@ export class CFRService {
    *
    * The authority is settled by PRECEDENCE: the title the caller names
    * wins; a citation that names its own title (`32 CFR § 70.1`) settles it
-   * next; and a citation that names neither is resolved across every
-   * stored title — served when it is unique, refused as ambiguous when it
-   * is not (see {@link resolveSection}).
+   * next; and an untitled citation tries Title 38 before looking in other
+   * stored titles (see {@link resolveSection}).
    */
   getSection(citationInput: string, titleInput?: number | string | undefined): SectionDetail {
     const parsed = citationInputSchema.safeParse(citationInput);
@@ -841,6 +843,8 @@ export class CFRService {
       // the exact form extractReferences() stored at rebuild time. The edges
       // are the SECTION's title's edges: a cross-title edge never exists.
       citedBy: this.store.citedBy(row.citation, row.title),
+      // Citation support uses the same title-scoped edges as citedBy.
+      citationSupport: this.store.citationSupport(row.citation, row.title),
       indexStale: status.stale,
       notice: noticeFor(status),
     };

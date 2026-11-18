@@ -403,10 +403,7 @@ function handleSection(
     sendJson(req, res, 400, errorBody('invalid_input', 'malformed URL encoding'));
     return;
   }
-  // The title names the CFR title to read within; without one the citation
-  // is resolved across every stored title (and refused when it is
-  // ambiguous). `all` is refused here too: a read answers with ONE
-  // provision.
+  // Untitled reads try Title 38 first, then look in other stored titles.
   const section = service.getSection(citation, url.searchParams.get('title') ?? undefined);
   sendJson(req, res, 200, { ...section }, 'public, max-age=3600', REVALIDATABLE);
 }

@@ -271,7 +271,7 @@ paths:
       summary: Full-text search over the local index
       responses:
         '200':
-          description: 'Ranked hits plus the index freshness envelope; a query that is itself a citation (4.130, 38 CFR 4.16) is pinned first on page 1. `title` selects the CFR title the search runs in (the default is 38; `all` searches every stored title, and every hit then carries the title it belongs to). Cache-Control: public, max-age=300.'
+          description: 'Ranked hits plus the index freshness envelope; a query that is itself an in-scope citation (4.130, 38 CFR 4.16) is pinned first on page 1. `title` selects the CFR title the search runs in (the default is 38; `all` searches every stored title, and every hit then carries the title it belongs to). Cache-Control: public, max-age=300.'
           headers:
             ETag:
               description: 'Strong validator over the response payload — a quoted sha256 of the exact response bytes ("sha256-<hex>", src/titan/http-server.ts#etagFor). Send it back as If-None-Match to revalidate.'
@@ -378,7 +378,7 @@ paths:
       summary: Full text of one section or appendix
       responses:
         '200':
-          description: 'Markdown + text + metadata + cross-references, and the CFR title the provision belongs to. `title` names the title to read within; without one the citation is resolved across every stored title, and a citation two titles hold is refused as ambiguous (400 invalid_input, the message names the titles). Cache-Control: public, max-age=3600.'
+          description: 'Markdown + text + metadata + cross-references, and the CFR title the provision belongs to. `title` names the title to read within; an untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it (400 invalid_input, the message names the titles). Cache-Control: public, max-age=3600.'
           headers:
             ETag:
               description: 'Strong validator over the response payload — a quoted sha256 of the exact response bytes ("sha256-<hex>", src/titan/http-server.ts#etagFor). Send it back as If-None-Match to revalidate.'
@@ -407,7 +407,7 @@ paths:
         - name: title
           in: query
           required: false
-          description: 'The CFR title to read within — a title number (e.g. 32). Without it the citation is resolved across every stored title and refused as ambiguous when more than one title holds it; `all` is a search-only scope and is refused here.'
+          description: 'The CFR title to read within — a title number (e.g. 32). An untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it; `all` is a search-only scope and is refused here.'
           schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
     head:
       summary: Headers-only section probe
@@ -435,7 +435,7 @@ paths:
         - name: title
           in: query
           required: false
-          description: 'The CFR title to read within — a title number (e.g. 32). Without it the citation is resolved across every stored title and refused as ambiguous when more than one title holds it; `all` is a search-only scope and is refused here.'
+          description: 'The CFR title to read within — a title number (e.g. 32). An untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it; `all` is a search-only scope and is refused here.'
           schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
   /api/v1/browse:
     # source: src/titan/http-server.ts#dispatch (router), handleBrowse (revalidatable send)
@@ -948,6 +948,7 @@ components:
         - sourceUrlAtIndexDate
         - references
         - citedBy
+        - citationSupport
         - indexStale
         - notice
       properties:
@@ -987,6 +988,25 @@ components:
           type: array
           items: { type: string }
           description: 'Citations of indexed sections whose text references this one (reverse cross-references), sorted.'
+        citationSupport:
+          type: object
+          required: [subjectGroup, part, total]
+          additionalProperties: false
+          properties:
+            subjectGroup: { type: number }
+            part: { type: number }
+            total: { type: number }
+          description: >-
+            Structural Citation Support diagnostics (populated by
+            src/core/service.ts#getSection): distinct citing sections
+            within the provision's title (`total`), restricted to those sharing this
+            section's part (`part`), and further to those sharing its part
+            AND subject group (`subjectGroup`). Self-citations are excluded
+            and repeated references from one citing section count once; a
+            citing section with missing/empty part or subject_group counts
+            toward `total` only — missing metadata never wildcard-matches.
+            Diagnostic output only: the quantity is query-independent and
+            never affects search ranking or candidate sets.
         indexStale: { type: boolean }
         notice: { type: [string, 'null'] }
       additionalProperties: false

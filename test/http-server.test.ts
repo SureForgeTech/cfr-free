@@ -297,6 +297,56 @@ describe('Titan HTTP API', () => {
     }
   });
 
+  it('surfaces citationSupport diagnostics on the wire', async () => {
+    // Self-contained store: the shared fixture seed has no citation edges, so
+    // the vector needs its own. 4.131 cites § 4.130 from the same part and
+    // subject group; 4.132 from the same part, another subject group; 17.15
+    // from another part.
+    const seeded = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.130',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Evaluation rules for mental disorder claims.',
+        }),
+        makeSection({
+          citation: '4.131',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.130 for the evaluation procedure.',
+        }),
+        makeSection({
+          citation: '4.132',
+          part: '4',
+          subjectGroup: 'grp-b',
+          text: 'See § 4.130 for the shared rule.',
+        }),
+        makeSection({
+          citation: '17.15',
+          part: '17',
+          subjectGroup: null,
+          text: 'See § 4.130 from another part.',
+        }),
+      ],
+    });
+    const custom = createHttpServer(new CFRService(seeded.store, 7), createTestLogger());
+    await new Promise<void>((resolve) => custom.listen(0, '127.0.0.1', resolve));
+    const port = (custom.address() as AddressInfo).port;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/sections/4.130`);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Json;
+      expect(body['citationSupport']).toEqual({ subjectGroup: 1, part: 2, total: 3 });
+    } finally {
+      await new Promise<void>((resolve) => {
+        custom.close(() => resolve());
+        custom.closeAllConnections();
+      });
+      seeded.cleanup();
+    }
+  });
+
   it('handles URL-encoded citations', async () => {
     const { status, body } = await get('/api/v1/sections/Appendix%20A%20to%20Part%204');
     expect(status).toBe(200);

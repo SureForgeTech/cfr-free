@@ -50,7 +50,8 @@ keys, no telemetry — one Node process and one SQLite file.
   snapshot of the index you can copy anywhere (sqlite default; `jsonl` and `md`
   for pipeline ingestion). The `compare_snapshots` MCP tool compares two stored
   SQLite snapshots offline — added, removed and changed provisions with dated
-  source links and bounded text-change hunks.
+  source links and bounded text-change hunks (`cfr-free compare <from> <to>`
+  or the `compare_snapshots` MCP tool).
 
 ## Requirements
 
@@ -191,6 +192,8 @@ node dist/cli.js export ./backup.sqlite   # consistent snapshot of the local ind
 node dist/cli.js search PTSD               # ranked provisions from the local index
 
 node dist/cli.js diff 2026-01-01 2026-06-01   # provision changes between two issue dates
+node dist/cli.js export /tmp/old.sqlite       # store a snapshot before refreshing
+node dist/cli.js compare /tmp/old.sqlite ./backup.sqlite  # offline snapshot comparison
 node dist/cli.js redline 2026-01-01 2026-06-01 4.125   # line-level redline of one provision
 ```
 
@@ -387,7 +390,7 @@ disorders?"_ or _"Search Title 38 for traumatic brain injury compensation."_
 | Tool                 | Arguments                                                             | Returns                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search_regulations` | `query`, `page?`, `per_page?`, `part?`, `kind?`, `chapter?`, `title?` | Ranked hits: citation (+ `38 C.F.R. §` display form, ecfr.gov link), heading, snippet, score, matches — with exact-citation pinning, `"quoted phrase"` search, and claims-acronym expansion (PTSD, TDIU, SMC, …). Each response also carries `matchedTerms`/`unmatchedTerms`: the query's content words the returned hits did and did not answer. `title` selects the CFR title (the default is 38; `all` searches every stored title), and every hit carries the title it belongs to |
-| `get_section`        | `citation` (e.g. `38 CFR 4.125`), `title?`                            | Full section text as markdown + ecfr.gov link + cross-references with availability flags. `title` names the CFR title to read within; a citation that exists in more than one stored title is refused as ambiguous (the error names the titles) unless the title is named                                                                                                                                                                                                             |
+| `get_section`        | `citation` (e.g. `38 CFR 4.125`), `title?`                            | Full section text as markdown + ecfr.gov link + cross-references with availability flags. `title` names the CFR title to read within; an untitled citation tries Title 38 first, then resolves a unique match in another title or reports ambiguity if several other titles hold it                                                                                                                                                                                                   |
 | `browse_title38`     | `chapter?`, `part?`, `subpart?`, `subject_group?`                     | Children of the requested hierarchy level (a `subject_group` holds the sections of one regulatory subject)                                                                                                                                                                                                                                                                                                                                                                            |
 | `index_status`       | —                                                                     | Issue date, last sync, row counts, staleness, drift flag, corpus receipt hash, and what the last sync amended/added/removed                                                                                                                                                                                                                                                                                                                                                           |
 | `list_parts`         | —                                                                     | Parts in the index with titles and section/appendix counts                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -430,9 +433,9 @@ follow cross-references → paste-ready citations with source URLs.
 | `GET` / `HEAD` | `/api/v1/redline`            | `from`, `to`, `citation` (all required; fetches from eCFR on demand)   |
 
 `title` selects the CFR title a read runs in — a title number (the default is 38) or `all` for the search route, where every hit then carries the title it
-belongs to. A section read names ONE title: without one the citation is
-resolved across every stored title, and a citation two titles hold is refused
-as ambiguous (the error names the titles).
+belongs to. An untitled section read tries Title 38 first, then resolves a
+unique match in another title. If several other titles hold the citation, the
+error names the titles.
 
 `/health` and `/metrics` additionally expose `diskFree`/`diskTotal` and the
 `cfr_free_disk_free_bytes`/`cfr_free_disk_total_bytes` gauges when the platform

@@ -26,9 +26,8 @@ import {
  * multi-title design, 2026-11-13).
  *
  * The fixtures below are SYNTHETIC and local: a temp SQLite store, two
- * titles' rows, no network. The Title-32 rows deliberately share one
- * citation with Title 38 ('70.1'), which is what makes the ambiguity rule
- * observable.
+ * titles' rows, no network. Titles 32 and 38 both hold § 70.1, with
+ * distinct text and inbound citation counts.
  */
 
 const ISSUE_DATE = '2026-10-09';
@@ -47,16 +46,25 @@ const TITLE_38_SECTIONS: RawSection[] = [
   }),
 ];
 
-/** Title 32's rows: one provision Title 38 also has, and one only it has. */
+/** Title 32's rows include a shared citation and provisions unique to Title 32. */
 const TITLE_32_SECTIONS: RawSection[] = [
   makeSection({
     citation: '70.1',
     part: '70',
     subpart: null,
+    subjectGroup: 'review',
     heading: 'Discharge review board procedures.',
     path: '/title:32/chapter:I/part:70',
     text: 'Procedures for reviewing the discharge of a member under the uniform code.',
     markdown: '## Discharge review board procedures.',
+  }),
+  makeSection({
+    citation: '70.2',
+    part: '70',
+    subpart: null,
+    subjectGroup: 'review',
+    path: '/title:32/chapter:I/part:70',
+    text: 'See § 70.1 for the discharge review procedures.',
   }),
   makeSection({
     citation: '3.12',
@@ -146,6 +154,33 @@ describe('the title-scoped search', () => {
     }
   });
 
+  it.each([
+    { query: '32 CFR 70.1', title: undefined },
+    { query: '38 CFR 70.1', title: 32 },
+  ])('does not pin $query in scope $title', (input) => {
+    const temp = openMultiTitleStore();
+    try {
+      expect(
+        serviceOver(temp)
+          .search(input)
+          .hits.filter((hit) => hit.direct),
+      ).toEqual([]);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it.each([32, 'all'] as const)('pins only the cited title in scope %s', (title) => {
+    const temp = openMultiTitleStore();
+    try {
+      const { hits } = serviceOver(temp).search({ query: '32 CFR 70.1', title });
+      expect(hits[0]).toMatchObject({ title: 32, citation: '70.1', direct: true });
+      expect(hits.filter((hit) => hit.direct)).toHaveLength(1);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it('keeps the per-title filters working inside the selected title', () => {
     const temp = openMultiTitleStore();
     try {
@@ -179,11 +214,30 @@ describe('the title-scoped search', () => {
 });
 
 describe('the title-scoped section read', () => {
-  it('refuses an ambiguous citation and names the titles', () => {
+  it('prefers Title 38 for an untitled citation held by both titles', () => {
     const temp = openMultiTitleStore();
     try {
-      expect(() => serviceOver(temp).getSection('70.1')).toThrow(
-        /exists in more than one stored title \(32, 38\)/,
+      expect(serviceOver(temp).getSection('70.1')).toMatchObject({
+        title: 38,
+        heading: 'Veteran discharge procedures.',
+      });
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('names the titles when the fallback citation is ambiguous', () => {
+    const temp = openMultiTitleStore();
+    try {
+      temp.store.replaceTitleWithBaseline(
+        33,
+        [makeSection({ citation: '3.12', part: '3' })],
+        ISSUE_DATE,
+        {},
+        () => undefined,
+      );
+      expect(() => serviceOver(temp).getSection('3.12')).toThrow(
+        /exists in more than one stored title \(32, 33\)/,
       );
     } finally {
       temp.cleanup();
@@ -196,6 +250,25 @@ describe('the title-scoped section read', () => {
       const section = serviceOver(temp).getSection('70.1', 32);
       expect(section.title).toBe(32);
       expect(section.heading).toBe('Discharge review board procedures.');
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it('reports citation support from the provision’s own title', () => {
+    const temp = openMultiTitleStore();
+    try {
+      const service = serviceOver(temp);
+      expect(service.getSection('70.1', 32).citationSupport).toEqual({
+        subjectGroup: 1,
+        part: 1,
+        total: 1,
+      });
+      expect(service.getSection('70.1', 38).citationSupport).toEqual({
+        subjectGroup: 0,
+        part: 0,
+        total: 0,
+      });
     } finally {
       temp.cleanup();
     }
@@ -346,7 +419,7 @@ describe('the MCP surface', () => {
     }
   });
 
-  it('refuses an ambiguous citation, naming the titles', async () => {
+  it('prefers Title 38 for an untitled read', async () => {
     const temp = openMultiTitleStore();
     const server = buildMcpServer(serviceOver(temp), createTestLogger());
     const client = new Client({ name: 'multi-title-test', version: '1.0.0' });
@@ -356,9 +429,12 @@ describe('the MCP surface', () => {
       const result = (await client.callTool({
         name: 'get_section',
         arguments: { citation: '70.1' },
-      })) as { isError?: boolean; content: Array<{ text?: string }> };
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('exists in more than one stored title (32, 38)');
+      })) as { isError?: boolean; structuredContent?: Record<string, unknown> };
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        title: 38,
+        heading: 'Veteran discharge procedures.',
+      });
     } finally {
       await client.close();
       await server.close();
@@ -413,15 +489,16 @@ describe('the HTTP surface', () => {
     }
   });
 
-  it('refuses an ambiguous citation with a 400 naming the titles', async () => {
+  it('prefers Title 38 for an untitled read', async () => {
     const temp = openMultiTitleStore();
     const server = await serve(temp);
     try {
       const response = await fetch(`${server.url}/api/v1/sections/70.1`);
-      expect(response.status).toBe(400);
-      const body = (await response.json()) as { error: string; message: string };
-      expect(body.error).toBe('invalid_input');
-      expect(body.message).toContain('exists in more than one stored title (32, 38)');
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        title: 38,
+        heading: 'Veteran discharge procedures.',
+      });
     } finally {
       await server.close();
       temp.cleanup();

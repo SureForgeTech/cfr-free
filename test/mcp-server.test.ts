@@ -226,6 +226,61 @@ describe('MCP server (in-memory transport)', () => {
     }
   });
 
+  it('get_section surfaces citationSupport diagnostics on the wire', async () => {
+    // Self-contained store: the shared fixture seed cites nothing, so the
+    // vector needs its own edges. 4.131 cites § 4.130 from the same part and
+    // subject group; 17.15 cites it from another part; 4.132 cites it from
+    // the same part but another subject group.
+    const seeded = openTempStore({
+      sections: [
+        makeSection({
+          citation: '4.130',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'Evaluation rules for mental disorder claims.',
+        }),
+        makeSection({
+          citation: '4.131',
+          part: '4',
+          subjectGroup: 'grp-a',
+          text: 'See § 4.130 for the evaluation procedure.',
+        }),
+        makeSection({
+          citation: '4.132',
+          part: '4',
+          subjectGroup: 'grp-b',
+          text: 'See § 4.130 for the shared rule.',
+        }),
+        makeSection({
+          citation: '17.15',
+          part: '17',
+          subjectGroup: null,
+          text: 'See § 4.130 from another part.',
+        }),
+      ],
+    });
+    const server = buildMcpServer(new CFRService(seeded.store, 7), createTestLogger());
+    const probe = new Client({ name: 'probe', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), probe.connect(clientTransport)]);
+    try {
+      const result = (await probe.callTool({
+        name: 'get_section',
+        arguments: { citation: '4.130' },
+      })) as ToolCallResult;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent?.['citationSupport']).toEqual({
+        subjectGroup: 1,
+        part: 2,
+        total: 3,
+      });
+    } finally {
+      await probe.close();
+      await server.close();
+      seeded.cleanup();
+    }
+  });
+
   it('get_section returns tool errors for unknown citations', async () => {
     const result = (await client.callTool({
       name: 'get_section',
