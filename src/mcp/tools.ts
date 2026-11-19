@@ -8,6 +8,7 @@ import { redlineSection } from '../core/redline.js';
 import { ARCHIVE_FLOOR } from '../core/archive.js';
 import { historicalSection } from '../core/historical.js';
 import { compareSnapshots } from '../core/snapshot-compare.js';
+import { DEFAULT_TITLE } from '../core/titles.js';
 import {
   SEARCH_QUERY_MAX_LENGTH,
   SEARCH_QUERY_MIN_LENGTH,
@@ -434,8 +435,8 @@ export function registerTools(
           .union([z.number().int().min(1).max(50), z.literal('all')])
           .optional()
           .describe(
-            'the CFR title to search in (default 38 — Veterans Benefits); "all" searches every ' +
-              'stored title and labels every hit with its own title',
+            `the CFR title to search in (default ${DEFAULT_TITLE} — Veterans Benefits); "all" ` +
+              'searches every stored title and labels every hit with its own title',
           ),
       },
       outputSchema: searchOutputSchema,
