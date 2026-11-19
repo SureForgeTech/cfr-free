@@ -52,7 +52,8 @@ export const SNAPSHOT_CHANGE_CAP = CHANGE_LIST_CAP;
  *
  * The FIRST entry of a category is always taken, even when it does not fit
  * (see {@link takeWithinBudget}): a category is never empty, so its count is
- * never a false zero.
+ * never a false zero. The response can therefore exceed the budget by up to
+ * one such entry per category — three in all.
  */
 export const SNAPSHOT_RESPONSE_CHAR_BUDGET = 200_000;
 
