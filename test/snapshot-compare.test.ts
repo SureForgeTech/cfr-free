@@ -414,8 +414,9 @@ describe('compareSnapshots', () => {
 
       // A snapshot inside a directory nobody may read cannot be inspected at
       // all — that is neither "missing" nor "not a regular file", and the
-      // message says so. (Root reads everything, so the case is skipped there.)
-      if (process.getuid?.() !== 0) {
+      // message says so. (Root reads everything and Windows has no POSIX
+      // permissions, so the case is skipped there.)
+      if (process.platform !== 'win32' && process.getuid?.() !== 0) {
         const locked = path.join(fixture.dir, 'locked');
         mkdirSync(locked);
         const hidden = path.join(locked, 'hidden.sqlite');

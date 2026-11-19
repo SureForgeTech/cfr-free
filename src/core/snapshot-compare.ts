@@ -301,14 +301,19 @@ function openSnapshot(resolved: string, label: string, logger: Logger): Store {
   }
 }
 
-/** Whether a stat failure means the path is not there (as opposed to unreadable). */
+/**
+ * Whether a stat failure means the path is not there (as opposed to
+ * unreadable).
+ *
+ * ENOENT is "not there"; ENOTDIR is "not there either" — a path whose parent
+ * component is a regular file cannot name a snapshot. Every other errno
+ * (EACCES, ELOOP, ENAMETOOLONG, …) means the path might be there and could
+ * not be inspected.
+ */
 function isMissingFile(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === 'ENOENT'
-  );
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 /** The recorded issue date of a snapshot, rejecting files that record none. */
