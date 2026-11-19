@@ -1,0 +1,12 @@
+
+> cfr-free@0.2.3 ci
+> npm run format:check && npm run lint && npm run lint:actions && npm run typecheck && npm run test:coverage && npm run build && npm run scan:audit
+
+
+> cfr-free@0.2.3 format:check
+> prettier --check .
+
+Checking formatting...
+[warn] src/commands/export.ts
+[warn] Code style issues found in the above file. Run Prettier with --write to fix.
+EXIT=1
