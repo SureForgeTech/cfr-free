@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import path from 'node:path';
 import type { Logger } from '../logger.js';
 import { CHANGE_LIST_CAP, diffHashes } from './changes.js';
@@ -246,36 +246,49 @@ function changedChange(citation: string, from: SideContext, to: SideContext): Sn
  *
  * A snapshot is a FILE the operator stored with `cfr-free export`. Anything
  * else — a directory, a device, a FIFO — is refused BEFORE SQLite sees it:
- * opening a FIFO blocks the synchronous open forever, so one tool call would
- * freeze the whole stdio server.
+ * opening a FIFO with the synchronous driver blocks the open forever, so one
+ * tool call would freeze the whole stdio server.
  *
  * Every failure here is CLIENT-SAFE (SPEC §7): the message names the side and
  * what to do, never the server's path and never raw SQLite text. The detail
  * goes to the server log.
  */
 function openSnapshot(resolved: string, label: string, logger: Logger): Store {
-  if (!existsSync(resolved)) {
+  let isFile: boolean;
+  try {
+    isFile = statSync(resolved).isFile();
+  } catch (error) {
+    if (isMissingFile(error)) {
+      throw new ServiceError(
+        `the ${label} snapshot does not exist — store one first with \`cfr-free export <path>\``,
+        'invalid_input',
+      );
+    }
+    // The file cannot be inspected at all (its directory cannot be read, it
+    // vanished): the detail is for the log, the client gets guidance.
+    logger.error('snapshot could not be inspected', {
+      side: label,
+      message: error instanceof Error ? error.message : String(error),
+    });
     throw new ServiceError(
-      `the ${label} snapshot does not exist — store one first with \`cfr-free export <path>\``,
+      `the ${label} snapshot could not be read — it must be a readable cfr-free index file`,
+      'invalid_input',
+    );
+  }
+  if (!isFile) {
+    throw new ServiceError(
+      `the ${label} snapshot is not a regular file — a snapshot must be a cfr-free index file`,
       'invalid_input',
     );
   }
   try {
-    if (!statSync(resolved).isFile()) {
-      throw new ServiceError(
-        `the ${label} snapshot is not a regular file — a snapshot must be a cfr-free index file`,
-        'invalid_input',
-      );
-    }
     // STRICT, read-only open (no creation, journal-mode rewrite, schema
     // creation, or upgrade), same adoption contract as export: a comparison
     // never repairs or alters the files it reads.
     return Store.open(resolved, { readOnly: true });
   } catch (error) {
-    // The guard's own refusal is guidance already; everything else (the file
-    // vanished, it cannot be inspected, SQLite rejected it) keeps its raw
-    // text — and the path that text names — in the server log.
-    if (error instanceof ServiceError) throw error;
+    // The raw SQLite text (and the path it names) stays in the log; the
+    // client receives guidance it can act on.
     logger.error('snapshot could not be opened', {
       side: label,
       message: error instanceof Error ? error.message : String(error),
@@ -286,6 +299,16 @@ function openSnapshot(resolved: string, label: string, logger: Logger): Store {
       'invalid_input',
     );
   }
+}
+
+/** Whether a stat failure means the path is not there (as opposed to unreadable). */
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  );
 }
 
 /** The recorded issue date of a snapshot, rejecting files that record none. */

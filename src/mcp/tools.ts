@@ -667,7 +667,7 @@ export function registerTools(
         '`imageContent: true` flag marks a provision whose rating-table graphics are not in the text. ' +
         'Optional `part` restricts the comparison to one CFR part. Both snapshots must be REGULAR ' +
         'files — a directory, a device or a FIFO is refused before the file is opened, because ' +
-        'opening one of those blocks the server — and both must record an issue date; identical ' +
+        'opening a FIFO blocks the server — and both must record an issue date; identical ' +
         'paths, a missing file, or a file that is not a cfr-free snapshot are rejected as errors ' +
         'before any comparison. Every such error names the side and what to do; the server keeps ' +
         'its own paths and the raw SQLite diagnostics in its log. ' +

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -398,14 +398,36 @@ describe('compareSnapshots', () => {
       // writer below keeps the pipe from blocking if the guard is ever
       // removed, so a regression fails this test instead of hanging it.
       const fifo = path.join(fixture.dir, 'fifo.sqlite');
-      spawnSync('mkfifo', [fifo]);
-      const writer = spawn('sh', ['-c', `head -c 100 /dev/zero > "${fifo}"`], { stdio: 'ignore' });
-      try {
-        expect(() => compareSnapshots({ logger: createTestLogger() }, fifo, paths.to)).toThrow(
-          /the from snapshot is not a regular file/,
-        );
-      } finally {
-        writer.kill();
+      const made = spawnSync('mkfifo', [fifo]);
+      if (made.status === 0) {
+        const writer = spawn('sh', ['-c', `head -c 100 /dev/zero > "${fifo}"`], {
+          stdio: 'ignore',
+        });
+        try {
+          expect(() => compareSnapshots({ logger: createTestLogger() }, fifo, paths.to)).toThrow(
+            /the from snapshot is not a regular file/,
+          );
+        } finally {
+          writer.kill();
+        }
+      }
+
+      // A snapshot inside a directory nobody may read cannot be inspected at
+      // all — that is neither "missing" nor "not a regular file", and the
+      // message says so. (Root reads everything, so the case is skipped there.)
+      if (process.getuid?.() !== 0) {
+        const locked = path.join(fixture.dir, 'locked');
+        mkdirSync(locked);
+        const hidden = path.join(locked, 'hidden.sqlite');
+        writeFileSync(hidden, 'not a database');
+        chmodSync(locked, 0o000);
+        try {
+          expect(() => compareSnapshots({ logger: createTestLogger() }, hidden, paths.to)).toThrow(
+            /the from snapshot could not be read/,
+          );
+        } finally {
+          chmodSync(locked, 0o700);
+        }
       }
     } finally {
       fixture.cleanup();
