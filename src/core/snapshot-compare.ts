@@ -67,6 +67,22 @@ const SUMMARY_TOTAL_CHARS = 2_500;
 /** Per-side character bound of a coarse summary block (a provision over the line LCS cap). */
 const SUMMARY_BLOCK_CHARS = 1_000;
 
+/**
+ * Per-entry bound on a heading.
+ *
+ * The corpus bounds a provision's TEXT but not its HEADING, so a heading can
+ * be as long as a section's text. The comparison is a summary surface: a
+ * heading is a title, and an entry that carries an unbounded one could not
+ * fit the response budget at all — which would leave the whole category
+ * empty. The bound keeps every entry inside the budget.
+ */
+const HEADING_CHARS = 1_000;
+
+/** Clip a heading at the bound; a cut heading is marked with an ellipsis. */
+function clipHeading(heading: string): string {
+  return heading.length <= HEADING_CHARS ? heading : `${heading.slice(0, HEADING_CHARS)}…`;
+}
+
 /** One side of the comparison: the file and the issue date it records. */
 export interface SnapshotSide {
   /** The snapshot file, as the caller named it (never the resolved path). */
@@ -142,8 +158,9 @@ export interface SnapshotComparison {
  * An entry's cost is its JSON size: the same bytes the structured payload
  * carries (the text channel renders the same information, so the wire carries
  * roughly twice this). One entry always fits a share — the per-entry bounds
- * cap an entry at a few kilobytes, a share at tens of kilobytes — so a
- * category that has changes always shows at least one of them.
+ * cap an entry at a few kilobytes (the summary text, the heading and the
+ * metadata together), a share at tens of kilobytes — so a category that has
+ * changes always shows at least one of them.
  */
 function takeWithinBudget(
   citations: readonly string[],
@@ -244,7 +261,7 @@ function presenceChange(
   return {
     citation,
     kind: present.kind,
-    heading: present.heading,
+    heading: clipHeading(present.heading),
     headingChanged: false,
     previousHeading: null,
     chapter: present.chapter,
@@ -273,9 +290,9 @@ function changedChange(citation: string, from: SideContext, to: SideContext): Sn
   return {
     citation,
     kind: to.row.kind,
-    heading: to.row.heading,
+    heading: clipHeading(to.row.heading),
     headingChanged,
-    previousHeading: headingChanged ? from.row.heading : null,
+    previousHeading: headingChanged ? clipHeading(from.row.heading) : null,
     chapter: to.row.chapter,
     part: to.row.part,
     subpart: to.row.subpart,

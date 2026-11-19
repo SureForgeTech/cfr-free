@@ -299,6 +299,69 @@ describe('compareSnapshots', () => {
     }
   });
 
+  it('gives every category its own share of the budget', () => {
+    const fixture = snapshotDir();
+    try {
+      // A big ADDED list beside a small CHANGED list: the shares are equal
+      // and not lent, so the changed list is complete even though the added
+      // list is cut.
+      const lines = Array.from(
+        { length: 6 },
+        (_, i) => `Line ${i} of the provision. ${'x'.repeat(900)}`,
+      );
+      const count = 40;
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.1', heading: 'Small change.', text: 'Old body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(
+        to,
+        [
+          makeSection({ citation: '4.1', heading: 'Small change.', text: 'New body.' }),
+          ...Array.from({ length: count }, (_, i) =>
+            makeSection({ citation: `4.a${String(i)}`, text: lines.join('\n') }),
+          ),
+        ],
+        TO_DATE,
+      );
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added.length).toBeLessThan(count);
+      expect(result.truncated).toBe(true);
+      // The changed list spent a few characters of its own share and kept its
+      // entry: a shared pool would have starved it.
+      expect(result.changed.map((change) => change.citation)).toEqual(['4.1']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('bounds an entry that carries an unbounded heading', () => {
+    // The corpus bounds a provision's TEXT, not its heading. An entry that
+    // carried a megabyte-long heading could not fit the budget at all, and
+    // the category would come back empty — so the heading is bounded too.
+    const fixture = snapshotDir();
+    try {
+      const heading = `Heading ${'x'.repeat(80_000)}`;
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(to, [makeSection({ citation: '4.1', heading, text: 'Body.' })], TO_DATE);
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added).toHaveLength(1);
+      expect(result.added[0]?.heading.length).toBeLessThanOrEqual(1_001);
+      expect(result.added[0]?.heading.endsWith('…')).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('bounds individual hunk text so one long provision line cannot exhaust the wire', () => {
     const fixture = snapshotDir();
     try {

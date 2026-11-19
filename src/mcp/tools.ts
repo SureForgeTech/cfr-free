@@ -667,9 +667,10 @@ export function registerTools(
         'when text or differing lines exist beyond the shown bound — including a very long provision, ' +
         'which falls back to one excerpt block per side). The whole response is bounded: the three ' +
         'category lists share a ' +
-        `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character budget, so a comparison of two wholesale ` +
-        'rebuilds is cut rather than megabytes long, and `truncated: true` says so; narrow the ' +
-        'comparison with `part` to see one part in full. A retitle with an ' +
+        `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character budget, split into three equal shares, so a ` +
+        'comparison of two wholesale rebuilds is cut rather than megabytes long, and ' +
+        '`truncated: true` says so; narrow the comparison with `part` to one CFR part (a single ' +
+        'part can still exceed the budget — `truncated: true` says that too). A retitle with an ' +
         'unchanged body is reported as a change (`headingChanged: true`, empty text summary); a ' +
         '`imageContent: true` flag marks a provision whose rating-table graphics are not in the text. ' +
         'Optional `part` restricts the comparison to one CFR part. Both snapshots must be REGULAR ' +
