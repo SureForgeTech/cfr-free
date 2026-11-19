@@ -429,12 +429,14 @@ every read names the authority it answers with:
   hit's own title
   (`…/current/title-32/section-70.1`).
 - **The Title-38-only surfaces.** The title scope covers the search and the
-  section read. Every other surface still answers for Title 38 alone:
-  `/health` and `/metrics` count Title 38's rows, `browse` and `list_parts`
-  walk Title 38's structure tree, the eCFR-backed tools (`diff_issues`,
-  `redline`, `get_section_at`) fetch Title 38's XML, and the MCP resources
+  section read. These surfaces still answer for Title 38 alone: `/health`
+  and `/metrics` count Title 38's rows, `browse` and `list_parts` walk Title
+  38's structure tree, the eCFR-backed tools (`diff_issues`, `redline`,
+  `get_section_at`) fetch Title 38's XML, and the MCP resources
   (`cfr://title38/parts`, `cfr://title38/definitions`) are Title 38's by
-  name. Making them title-scoped is a separate change.
+  name. (The CLI's export is not among them: it writes every stored title's
+  rows, each labeled with its own title.) Making the surfaces above
+  title-scoped is a separate change.
 - `indexIssueDate` and `indexStale` describe Title 38's freshness; the
   stale-index warning's point-in-time URL names the title the answer is
   about — the search scope's (a `<title>` placeholder under `title=all`),
