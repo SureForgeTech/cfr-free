@@ -8,6 +8,9 @@
  * keeps ONE account of each — the alternative was the literal 38 written in
  * two files, which is the kind of duplication the shared-rules tests exist
  * to prevent.
+ *
+ * The config imports the default title as well (`CFR_TITLES` defaults to the
+ * mission title), so the number 38 is written ONCE in the source tree.
  */
 
 /**
