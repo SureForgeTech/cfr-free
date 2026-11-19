@@ -1360,6 +1360,15 @@ describe('UI provision rendering (CR-23 — the rating tables keep their structu
     expect(bodyRows[1]?.childNodes.map((cell) => cell.textContent)).toEqual(['70', '30']);
   });
 
+  it('shows the escaped markdown as the text it stands for', async () => {
+    // The connector escapes the markdown constructs that would render as a
+    // link or raw HTML. This view is plain text, so it shows the escaped
+    // form as the characters it stands for.
+    const harness = makeHarness();
+    const body = await serveMarkdown(harness, 'Write to &lt;1@example.com> and see \\[the label].');
+    expect(body.childNodes[0]?.textContent).toBe('Write to <1@example.com> and see [the label].');
+  });
+
   it('gives the table the elements a table needs', async () => {
     // The cell ELEMENTS, not only their text: a header row of ordinary
     // cells would still show the words, and would tell a screen reader

@@ -27,14 +27,14 @@ your machine:
 | What your machine has                                    | Route                                                                | What it costs                                          |
 | -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
 | Docker, no Node                                          | [Docker](../README.md#1-docker-nothing-to-install)                   | a container; the index lives in a volume               |
-| Node ≥ 22.13 and npm                                     | [npm](../README.md#2-from-npm-no-compiler-no-docker)                 | nothing to compile — the published tarball ships built |
+| Node ≥ 22.15 and npm                                     | [npm](../README.md#2-from-npm-no-compiler-no-docker)                 | nothing to compile — the published tarball ships built |
 | Node, and you want one pinned release                    | [Release tarball](../README.md#3-from-a-release-tarball-no-compiler) | nothing to compile; the URL pins the version           |
 | A compiler, and you want the git tree without a checkout | [GitHub](../README.md#4-from-github-no-publish-step)                 | the first run compiles the project                     |
 | You intend to change the code                            | [Source checkout](../README.md#5-from-a-source-checkout)             | `npm ci` and a build                                   |
 
 Three things the README records, kept here so they are not lost along the way:
 
-- **Node ≥ 22.13 is required** by every route but Docker — the index runs on
+- **Node ≥ 22.15 is required** by every route but Docker — the index runs on
   the built-in `node:sqlite` module.
 - **`npm install -g github:SureForgeTech/sureforge-cfr` does not work.** npm itself
   leaves a command on PATH that does not run (measured; the README has the

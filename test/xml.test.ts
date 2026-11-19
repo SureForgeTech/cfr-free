@@ -248,6 +248,38 @@ describe('parseTitleXml', () => {
     // rule a fraction of one.
     expect(Date.now() - started).toBeLessThan(5_000);
   });
+
+  it('neutralizes an email autolink that starts with a tilde', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>Write to &lt;~team@example.com&gt; today.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // The CommonMark local part allows "~", so it starts an autolink too.
+    expect(section?.markdown).toContain('&lt;~team@example.com>');
+    expect(section?.markdown).not.toContain('<~team@example.com>');
+  });
+
+  it('neutralizes a reference definition whose label holds an escaped bracket', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>[a\\]b]: https://example.com</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // The label ends at the first bracket that is not escaped, so this is a
+    // reference definition and its opener must be neutralized.
+    expect(section?.markdown).toContain('\\[a\\]b]:');
+  });
 });
 
 /**
