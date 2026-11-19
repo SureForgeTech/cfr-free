@@ -1634,8 +1634,25 @@ describe('the declared runtime floor', () => {
     const manifest = JSON.parse(
       readFileSync(path.join(REPOSITORY_ROOT, 'package.json'), 'utf8'),
     ) as { engines?: { node?: string } };
-    expect(manifest.engines?.node).toBe('>=22.15');
+    expect(manifest.engines?.node).toBe('>=22.16');
     const spec = readFileSync(path.join(REPOSITORY_ROOT, 'docs/SPEC.md'), 'utf8');
-    expect(spec).toContain('Node ≥ 22.15');
+    expect(spec).toContain('Node ≥ 22.16');
+  });
+
+  it('declares a floor whose node:sqlite has FTS5', () => {
+    // The index schema is an FTS5 table, so a runtime whose node:sqlite
+    // does not enable FTS5 cannot open an index at all. Node enables it
+    // from 22.16; an earlier runtime answers "no such module: fts5".
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('CREATE VIRTUAL TABLE docs USING fts5(content)');
+      db.exec("INSERT INTO docs (content) VALUES ('Example')");
+      const row = db.prepare('SELECT count(*) AS n FROM docs').get() as {
+        n: number;
+      };
+      expect(row.n).toBe(1);
+    } finally {
+      db.close();
+    }
   });
 });

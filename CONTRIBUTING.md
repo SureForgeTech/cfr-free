@@ -32,7 +32,7 @@ npm ci          # installs pinned deps (allowlist-managed install scripts)
 npm run ci      # the same gate CI runs
 ```
 
-Requires Node ≥ 22.15 and `git` on PATH. The release guard
+Requires Node ≥ 22.16 and `git` on PATH. The release guard
 (`test/install-paths.test.ts`) reads the repository's tags with `git`, and a
 checkout without them makes that guard fail rather than pass silently: a
 shallow clone (`git clone --depth 1`) carries no tags, so fetch them with

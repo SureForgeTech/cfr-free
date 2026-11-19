@@ -6,7 +6,7 @@ A self-hosted **38 CFR data service ("Titan")** plus an **MCP server**, TypeScri
 
 - Index all of Title 38 CFR locally (SQLite + FTS5) from the public eCFR API.
 - Expose the data two ways: an HTTP API (`serve`) and an MCP stdio server (`mcp`).
-- Zero-infrastructure runtime: Node ≥ 22.15 built-ins only (`node:sqlite`, `node:http`).
+- Zero-infrastructure runtime: Node ≥ 22.16 built-ins only (`node:sqlite`, `node:http`).
 - Local gates green: dependency audit clean, risky patterns lint-blocked, strict TS, high test coverage, low complexity.
 
 **Non-goals:** auth/multi-tenant HTTP, vector/semantic search, live write-back to eCFR.
@@ -433,7 +433,7 @@ Hardening: no request bodies, zod-validated query strings, router-level byte cap
 
 For rate limiting behind a reverse proxy, `CFR_TRUSTED_PROXIES` accepts comma-separated IP addresses. Only a connection from an exact trusted address can use `X-Forwarded-For`. The server walks from the right through trusted hops to the first untrusted IP and falls back to the socket address if that walk encounters a malformed entry. Every trusted proxy must therefore overwrite `X-Forwarded-For` with the address it observed, or append to the header it received: a proxy that forwards a client-supplied `X-Forwarded-For` unchanged lets the client choose the identity its request is limited under. IPv4-mapped IPv6 and IPv4 representations share an identity. The limiter groups other IPv6 peers by /64 and evicts the least recently seen buckets in batches when its peer map reaches capacity.
 
-Diff, redline and historical lookups reject dates later than today in UTC before fetching from eCFR. XML parsing escapes inline links, reference links, images, raw HTML and angle-bracket autolinks in the Markdown body. It preserves bare URLs in Markdown and keeps the plain-text body as written.
+Diff, redline and historical lookups reject dates later than today in UTC before fetching from eCFR, and the comparison of two stored snapshots rejects a recorded issue date later than today as well, so a snapshot with a clock-skewed date is refused rather than compared. XML parsing escapes inline links, reference links, images, raw HTML and angle-bracket autolinks in the Markdown body. It preserves bare URLs in Markdown and keeps the plain-text body as written.
 
 The store disables `trusted_schema` and checks ownership of the schema before writing to the index, refusing files that contain foreign tables or an incompatible `sections` table. On writable opens it uses mode `0700` for the default app data directory and directories it creates, and mode `0600` for the database file itself (including a custom `CFR_INDEX_PATH`) and its WAL and shared-memory files where supported. A symlinked path is tightened on the file it resolves to, because that is the file SQLite opens. Existing custom parent directories keep their permissions. Evidence opens use standalone snapshots, preserve permissions and create no journal files. `export` creates its output exclusively via a private temporary file and refuses any existing path, including a dangling symlink.
 
