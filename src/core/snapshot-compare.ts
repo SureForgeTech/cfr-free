@@ -72,16 +72,15 @@ const SUMMARY_BLOCK_CHARS = 1_000;
  * The redline's own cap is 2,000 lines per side, and the line identity it
  * computes is quadratic: measured on this machine an LCS over two 2,000-line
  * sides takes ~12 ms and allocates an 8 MB table, while one over two
- * 500-line sides takes ~1 ms. The response budget caps how many entries a
- * comparison shows (~30 per category), so the redline's cap would still mean
- * around a second of SYNCHRONOUS work on the server's own thread for one
- * tool call.
+ * 500-line sides takes ~1 ms. The entry cap lets a comparison show ~100
+ * entries per category, so the redline's cap would still mean around a
+ * second of SYNCHRONOUS work on the server's own thread for one tool call.
  *
  * The comparison is a summary, not a redline: a provision over this cap falls
  * back to the same coarse excerpt the redline uses — two clipped blocks, one
  * per side — and claims no per-line identity.
  */
-const SUMMARY_MAX_LINES = 500;
+export const SUMMARY_MAX_LINES = 500;
 
 /**
  * Per-entry bound on a heading.
@@ -242,6 +241,12 @@ function presenceSummary(text: string, presentSide: 'from' | 'to'): ChangeSummar
 
 /** The summary of a provision present on both sides with differing content. */
 function changedSummary(fromText: string, toText: string): ChangeSummary {
+  // A RETITLE with an unchanged body: the change list holds it (the heading
+  // is part of the change hash) but no line differs, so the summary is empty
+  // — above the line cap exactly as below it. The coarse fallback below
+  // would otherwise report the whole body as deleted and re-added, and
+  // claim that differing lines were left out when there are none.
+  if (fromText === toText) return boundedHunks([], false);
   const fromLines = splitRedlineLines(fromText);
   const toLines = splitRedlineLines(toText);
   if (fromLines.length > SUMMARY_MAX_LINES || toLines.length > SUMMARY_MAX_LINES) {

@@ -493,6 +493,37 @@ describe('compareSnapshots', () => {
     }
   });
 
+  it('reports a retitle with an unchanged body as an empty summary, above the cap too', () => {
+    const fixture = snapshotDir();
+    try {
+      const from = path.join(fixture.dir, 'from.sqlite');
+      const to = path.join(fixture.dir, 'to.sqlite');
+      // The heading is part of the change hash, so a retitle lands in the
+      // changed list; the body is untouched, so NO line differs and the
+      // summary is empty — above the line cap exactly as below it (the
+      // coarse fallback would otherwise report the whole body as deleted and
+      // re-added).
+      const body = Array.from({ length: 600 }, (_, i) => `paragraph ${i}`).join('\n');
+      writeSnapshot(
+        from,
+        [makeSection({ citation: '4.1', heading: 'Old title.', text: body })],
+        FROM_DATE,
+      );
+      writeSnapshot(
+        to,
+        [makeSection({ citation: '4.1', heading: 'New title.', text: body })],
+        TO_DATE,
+      );
+
+      const change = compareSnapshots({ logger: createTestLogger() }, from, to).changed[0];
+      expect(change?.headingChanged).toBe(true);
+      expect(change?.summary.hunks).toEqual([]);
+      expect(change?.summary.truncated).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('keeps a large comparison responsive', () => {
     const fixture = snapshotDir();
     try {

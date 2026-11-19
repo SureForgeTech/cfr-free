@@ -117,8 +117,10 @@ function lineAt(lines: readonly string[], index: number): string {
  * word-diff), then a greedy traceback that emits one hunk per line. The
  * traceback prefers a from-line deletion on ties, so output is deterministic.
  *
- * The caller caps inputs at {@link MAX_REDLINE_LINES} per side first, so the
- * table below is bounded (see the allocation comment).
+ * The callers cap their inputs first — this module's own at
+ * {@link MAX_REDLINE_LINES} per side, the snapshot comparison's at a lower
+ * cap of its own — so the table below is bounded (see the allocation
+ * comment).
  *
  * Exported for the offline snapshot comparison (`src/core/snapshot-compare.ts`),
  * which reuses the same line identity to build a short changed-lines summary.
