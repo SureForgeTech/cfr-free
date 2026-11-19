@@ -77,9 +77,9 @@ const SUMMARY_BLOCK_CHARS = 1_000;
  *
  * The corpus bounds a provision's TEXT but not its HEADING, so a heading can
  * be as long as a section's text. The comparison is a summary surface: a
- * heading is a title, and an entry that carries an unbounded one could not
- * fit the response budget at all — which would leave the whole category
- * empty. The bound keeps every entry inside the budget.
+ * heading is a title, and a heading bound keeps the entry a summary can
+ * carry. (An entry can still exceed a category share — the corpus does not
+ * bound a citation or a hierarchy path either.)
  */
 const HEADING_CHARS = 1_000;
 
