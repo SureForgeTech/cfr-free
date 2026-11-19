@@ -386,6 +386,26 @@ describe('compareSnapshots', () => {
     }
   });
 
+  it('refuses a snapshot whose recorded issue date is later than today', () => {
+    // The spec says the comparison of two stored snapshots rejects a
+    // recorded issue date later than today as well, so a snapshot with a
+    // clock-skewed date is refused rather than compared.
+    const fixture = snapshotDir();
+    try {
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const file = path.join(fixture.dir, 'future-date.sqlite');
+      const other = path.join(fixture.dir, 'other.sqlite');
+      writeSnapshot(file, [makeSection({ citation: '4.1' })], future);
+      writeSnapshot(other, [makeSection({ citation: '4.2' })], '2026-01-01');
+
+      expect(() => compareSnapshots({ logger: createTestLogger() }, file, other)).toThrow(
+        /later than today/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('rejects snapshots with no issue date or an invalid recorded issue date', () => {
     const fixture = snapshotDir();
     try {
