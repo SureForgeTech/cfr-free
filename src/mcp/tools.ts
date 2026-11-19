@@ -7,7 +7,11 @@ import type { EcfrApi } from '../core/ecfr.js';
 import { redlineSection } from '../core/redline.js';
 import { ARCHIVE_FLOOR } from '../core/archive.js';
 import { historicalSection } from '../core/historical.js';
-import { compareSnapshots, SNAPSHOT_RESPONSE_CHAR_BUDGET } from '../core/snapshot-compare.js';
+import {
+  compareSnapshots,
+  SNAPSHOT_RESPONSE_CHAR_BUDGET,
+  SUMMARY_MAX_LINES,
+} from '../core/snapshot-compare.js';
 import { DEFAULT_TITLE } from '../core/titles.js';
 import {
   SEARCH_QUERY_MAX_LENGTH,
@@ -670,7 +674,9 @@ export function registerTools(
         'and a short line-level summary of the differing text (add/del hunks with 1-based anchors ' +
         'into each side; each hunk and each entry summary is character-bounded, and `truncated: true` ' +
         'when text or differing lines exist beyond the shown bound — including a very long provision, ' +
-        'which falls back to one excerpt block per side). The response is bounded: the three ' +
+        'over ' +
+        `${SUMMARY_MAX_LINES} lines on either side, which falls back to one excerpt block per side). ` +
+        'The response is bounded: the three ' +
         'category lists share a ' +
         `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character budget, split into three equal shares, so a ` +
         'comparison of two wholesale rebuilds is cut rather than megabytes long, and ' +

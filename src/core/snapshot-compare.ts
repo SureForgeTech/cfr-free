@@ -4,13 +4,7 @@ import type { Logger } from '../logger.js';
 import { CHANGE_LIST_CAP, diffHashes } from './changes.js';
 import { assertIssueDate } from './diff.js';
 import { ServiceError } from './errors.js';
-import {
-  lcsHunks,
-  MAX_REDLINE_LINES,
-  presenceHunks,
-  splitRedlineLines,
-  type Hunk,
-} from './redline.js';
+import { lcsHunks, presenceHunks, splitRedlineLines, type Hunk } from './redline.js';
 import { DEFAULT_TITLE, Store, type SectionRow } from './store.js';
 import { datedSourceUrlFor } from './urls.js';
 import { IMAGE_MARKER_PREFIX } from './xml.js';
@@ -73,6 +67,22 @@ const SUMMARY_TOTAL_CHARS = 2_500;
 const SUMMARY_BLOCK_CHARS = 1_000;
 
 /**
+ * Per-side line cap for the comparison's changed-lines summary.
+ *
+ * The redline's own cap is 2,000 lines per side, and the line identity it
+ * computes is quadratic: measured on this machine an LCS over two 2,000-line
+ * sides takes ~12 ms and allocates an 8 MB table, while one over two
+ * 500-line sides takes ~1 ms. The entry cap lets a comparison show ~100
+ * entries per category, so the redline's cap would still mean around a
+ * second of SYNCHRONOUS work on the server's own thread for one tool call.
+ *
+ * The comparison is a summary, not a redline: a provision over this cap falls
+ * back to the same coarse excerpt the redline uses — two clipped blocks, one
+ * per side — and claims no per-line identity.
+ */
+export const SUMMARY_MAX_LINES = 500;
+
+/**
  * Per-entry bound on a heading.
  *
  * The corpus bounds a provision's TEXT but not its HEADING, so a heading can
@@ -101,8 +111,9 @@ export interface ChangeSummary {
   /**
    * The differing lines (never 'same' entries). Anchors are 1-based line
    * numbers into that side's text; `null` marks the side the line is absent
-   * from. A provision over {@link MAX_REDLINE_LINES} on either side falls
-   * back to two excerpt blocks (from-side deletion, to-side addition).
+   * from. A provision over the comparison's line cap
+   * ({@link SUMMARY_MAX_LINES}) on either side falls back to two excerpt
+   * blocks (from-side deletion, to-side addition).
    */
   readonly hunks: readonly Hunk[];
   /** True when differing lines exist that the summary does not show. */
@@ -230,12 +241,18 @@ function presenceSummary(text: string, presentSide: 'from' | 'to'): ChangeSummar
 
 /** The summary of a provision present on both sides with differing content. */
 function changedSummary(fromText: string, toText: string): ChangeSummary {
+  // A RETITLE with an unchanged body: the change list holds it (the heading
+  // is part of the change hash) but no line differs, so the summary is empty
+  // — above the line cap exactly as below it. The coarse fallback below
+  // would otherwise report the whole body as deleted and re-added, and
+  // claim that differing lines were left out when there are none.
+  if (fromText === toText) return boundedHunks([], false);
   const fromLines = splitRedlineLines(fromText);
   const toLines = splitRedlineLines(toText);
-  if (fromLines.length > MAX_REDLINE_LINES || toLines.length > MAX_REDLINE_LINES) {
-    // Over the line LCS cap: no per-line identity is claimed — the summary
-    // carries one excerpt block per side, the redline's coarse shape cut to
-    // a short bound.
+  if (fromLines.length > SUMMARY_MAX_LINES || toLines.length > SUMMARY_MAX_LINES) {
+    // Over the comparison's line cap: no per-line identity is claimed — the
+    // summary carries one excerpt block per side, the redline's coarse shape
+    // cut to a short bound.
     return boundedHunks(
       [
         { fromLine: 1, toLine: null, type: 'del', text: clipBlock(fromText) },
