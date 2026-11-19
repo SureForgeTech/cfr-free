@@ -670,12 +670,14 @@ export function registerTools(
         'and a short line-level summary of the differing text (add/del hunks with 1-based anchors ' +
         'into each side; each hunk and each entry summary is character-bounded, and `truncated: true` ' +
         'when text or differing lines exist beyond the shown bound — including a very long provision, ' +
-        'which falls back to one excerpt block per side). The whole response is bounded: the three ' +
+        'which falls back to one excerpt block per side). The response is bounded: the three ' +
         'category lists share a ' +
         `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character budget, split into three equal shares, so a ` +
         'comparison of two wholesale rebuilds is cut rather than megabytes long, and ' +
-        '`truncated: true` says so; narrow the comparison with `part` to one CFR part (a single ' +
-        'part can still exceed the budget — `truncated: true` says that too). A retitle with an ' +
+        '`truncated: true` says so (a single pathological entry — one the corpus does not bound — ' +
+        'is always shown, so the response can exceed the budget by one entry per category); ' +
+        'narrow the comparison with `part` to one CFR part (a single part can still exceed the ' +
+        'budget — `truncated: true` says that too). A retitle with an ' +
         'unchanged body is reported as a change (`headingChanged: true`, empty text summary); a ' +
         '`imageContent: true` flag marks a provision whose rating-table graphics are not in the text. ' +
         'Optional `part` restricts the comparison to one CFR part. Both snapshots must be REGULAR ' +
