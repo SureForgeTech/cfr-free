@@ -1,0 +1,221 @@
+
+> cfr-free@0.2.3 ci
+> npm run format:check && npm run lint && npm run lint:actions && npm run typecheck && npm run test:coverage && npm run build && npm run scan:audit
+
+
+> cfr-free@0.2.3 format:check
+> prettier --check .
+
+Checking formatting...
+All matched files use Prettier code style!
+
+> cfr-free@0.2.3 lint
+> eslint .
+
+
+/workspace/sureforge-cfr-wire/src/cli.ts
+  1130:12  warning  Found realpathSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/diff.ts
+  35:10  warning  Found existsSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/export.ts
+  112:7   warning  Found linkSync from package "node:fs" with non literal argument at index 0,1     security/detect-non-literal-fs-filename
+  118:7   warning  Found unlinkSync from package "node:fs" with non literal argument at index 0     security/detect-non-literal-fs-filename
+  127:5   warning  Found writeFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+  147:5   warning  Found lstatSync from package "node:fs" with non literal argument at index 0      security/detect-non-literal-fs-filename
+  173:8   warning  Found existsSync from package "node:fs" with non literal argument at index 0     security/detect-non-literal-fs-filename
+  207:17  warning  Found statSync from package "node:fs" with non literal argument at index 0       security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/mcp-install.ts
+   82:17  warning  Found readFileSync from package "node:fs" with non literal argument at index 0   security/detect-non-literal-fs-filename
+  104:3   warning  Found mkdirSync from package "node:fs" with non literal argument at index 0      security/detect-non-literal-fs-filename
+  105:3   warning  Found writeFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/verify.ts
+  79:8  warning  Found existsSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/vibe-ui.ts
+  342:5  warning  Found mkdirSync from package "node:fs" with non literal argument at index 0      security/detect-non-literal-fs-filename
+  343:5  warning  Found writeFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/commands/vibe.ts
+  111:5  warning  Found writeFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/core/snapshot-compare.ts
+  246:8  warning  Found existsSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/core/store.ts
+  758:5  warning  Found mkdirSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/titan/http-server.ts
+  683:23  warning  Found readFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+/workspace/sureforge-cfr-wire/src/titan/ui.ts
+  148:10  warning  Found readFileSync from package "node:fs" with non literal argument at index 0  security/detect-non-literal-fs-filename
+
+✖ 19 problems (0 errors, 19 warnings)
+
+
+> cfr-free@0.2.3 lint:actions
+> actionlint
+
+
+> cfr-free@0.2.3 typecheck
+> tsc -p tsconfig.json --noEmit
+
+
+> cfr-free@0.2.3 test:coverage
+> vitest run --coverage
+
+
+ RUN  v5.1.0 /workspace/sureforge-cfr-wire
+      Coverage enabled with v8
+
+(node:2426490) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426496) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426595) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> cfr-free@0.2.3 prepare
+> node scripts/prepare.mjs
+
+copy-assets: src/titan/ui-client.js -> dist/titan/ui-client.js
+copy-assets: src/titan/ui-client.css -> dist/titan/ui-client.css
+(node:2426606) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426688) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426788) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426761) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426803) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426815) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+{"time":"2026-11-19T05:11:06.615Z","level":"info","message":"index verified","path":"/tmp/cfr-free-test-IgTfPW/nested/index.sqlite","sections":3,"appendices":1,"issueDate":"2026-10-09","receipt":"match"}
+{"time":"2026-11-19T05:11:06.640Z","level":"info","message":"index verified","path":"/tmp/cfr-free-test-iqw1VA/nested/index.sqlite","sections":3,"appendices":1,"issueDate":"2026-10-09","receipt":"absent"}
+copy-assets: src/titan/ui-client.js -> dist/titan/ui-client.js
+copy-assets: src/titan/ui-client.css -> dist/titan/ui-client.css
+{"time":"2026-11-19T05:11:06.654Z","level":"info","message":"index verified","path":"/tmp/cfr-free-test-UXlXS9/nested/index.sqlite","sections":3,"appendices":1,"issueDate":"2026-10-09","receipt":"mismatch"}
+{"time":"2026-11-19T05:11:06.656Z","level":"warn","message":"verification found no file","path":"/tmp/cfr-verify-iMQNkj/missing.sqlite"}
+{"time":"2026-11-19T05:11:06.672Z","level":"warn","message":"verification found no file","path":"/tmp/cfr-verify-iMQNkj/no-such.sqlite"}
+{"time":"2026-11-19T05:11:06.685Z","level":"warn","message":"verification refused the file","path":"/tmp/cfr-verify-iMQNkj/foreign.sqlite","detail":"cannot open index at /tmp/cfr-verify-iMQNkj/foreign.sqlite: the file is a SQLite database, but not a cfr-free index"}
+{"time":"2026-11-19T05:11:06.712Z","level":"info","message":"index verified","path":"/tmp/cfr-free-test-lLGveo/backup.sqlite","sections":3,"appendices":1,"issueDate":"2026-10-09","receipt":"match"}
+{"time":"2026-11-19T05:11:06.752Z","level":"info","message":"index verified","path":"/tmp/cfr-free-test-9YEJo8/older.sqlite","sections":3,"appendices":1,"issueDate":"2026-01-01","receipt":"match"}
+(node:2426871) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426899) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> cfr-free@0.2.3 build
+> tsc -p tsconfig.build.json && node scripts/copy-assets.mjs
+
+copy-assets: src/titan/ui-client.js -> dist/titan/ui-client.js
+copy-assets: src/titan/ui-client.css -> dist/titan/ui-client.css
+
+> cfr-free@0.2.3 prepare
+> node scripts/prepare.mjs
+
+copy-assets: src/titan/ui-client.js -> dist/titan/ui-client.js
+copy-assets: src/titan/ui-client.css -> dist/titan/ui-client.css
+(node:2426923) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426929) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426958) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426965) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426976) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2426990) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427001) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427012) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427057) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427113) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427124) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427194) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427283) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427294) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2427426) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  57 passed | 1 skipped (58)
+      Tests  1166 passed | 1 skipped (1167)
+   Start at  22:10:58
+   Duration  12.38s (tests 83%, import 13%, worker 2%, transform 2%)
+
+    Isolate  58 workers spawned · ~73ms startup each (spawn + environment, per file)
+             at least ~1.33s faster with isolate: false — reuses workers across files instead of one per file
+
+[34m % [39m[2mCoverage report from [22m[33mv8[39m
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   96.71 |    90.35 |   98.05 |   98.06 |                   
+ src               |   98.86 |    97.77 |   96.87 |     100 |                   
+  config.ts        |   97.91 |    96.96 |      95 |     100 | 139               
+ src/commands      |   97.48 |    89.16 |   98.48 |   97.86 |                   
+  compare.ts       |     100 |    89.36 |     100 |     100 | 31,33-34,57       
+  ensure-index.ts  |   96.66 |    86.36 |     100 |     100 | 42,86,139         
+  export.ts        |   89.79 |    83.33 |    87.5 |   89.79 | 114,129-141       
+  mcp-install.ts   |   93.61 |    85.71 |     100 |   93.61 | 53-54,57          
+  ...-scheduler.ts |     100 |    81.81 |     100 |     100 | 130-133           
+  search.ts        |     100 |     92.5 |     100 |     100 | 54,67,120         
+  ...m-guidance.ts |   95.45 |       95 |     100 |     100 | 40                
+  verify.ts        |     100 |     87.5 |     100 |     100 | 92,154,178        
+  vibe-ui.ts       |     100 |    93.75 |     100 |     100 | 339               
+  vibe.ts          |     100 |    83.33 |     100 |     100 | 96,108-109        
+ src/core          |   96.35 |    89.62 |   97.79 |   98.03 |                   
+  changes.ts       |   96.55 |       90 |     100 |     100 | 131               
+  citations.ts     |     100 |    96.29 |     100 |     100 | 99                
+  diff.ts          |     100 |    93.75 |     100 |     100 | 64                
+  historical.ts    |   93.33 |    83.33 |     100 |   93.33 | 88                
+  http-client.ts   |   94.62 |    92.64 |      75 |   98.76 | 154               
+  query.ts         |   97.84 |    89.55 |      96 |     100 | ...14,410,412-418 
+  references.ts    |     100 |       75 |     100 |     100 | 33,41             
+  ...-expansion.ts |   96.96 |    76.47 |     100 |   96.66 | 245               
+  service.ts       |   99.09 |    94.79 |     100 |   99.47 | 426               
+  ...ot-compare.ts |   93.67 |       88 |     100 |   94.66 | 135-136,193,221   
+  store.ts         |   94.53 |    82.25 |   98.43 |   94.75 | ...-880,1241-1262 
+  va-math.ts       |   97.61 |    93.75 |     100 |     100 | 115               
+  xml.ts           |    91.2 |    84.77 |     100 |   97.26 | ...38,420,514-515 
+ src/mcp           |   97.46 |    87.32 |   97.82 |   98.65 |                   
+  resources.ts     |     100 |    85.71 |     100 |     100 | 99,136            
+  tool-result.ts   |   94.87 |    86.11 |     100 |   96.87 | 121               
+  tools.ts         |   97.59 |    88.23 |   96.15 |   98.76 | 511               
+ src/titan         |   96.65 |    93.77 |     100 |   97.74 |                   
+  http-server.ts   |   96.31 |    93.33 |     100 |    97.5 | ...-825,1103,1114 
+-------------------|---------|----------|---------|---------|-------------------
+
+=============================== Coverage summary ===============================
+Statements   : 96.71% ( 2564/2651 )
+Branches     : 90.35% ( 1565/1732 )
+Functions    : 98.05% ( 454/463 )
+Lines        : 98.06% ( 2335/2381 )
+================================================================================
+
+> cfr-free@0.2.3 build
+> tsc -p tsconfig.build.json && node scripts/copy-assets.mjs
+
+copy-assets: src/titan/ui-client.js -> dist/titan/ui-client.js
+copy-assets: src/titan/ui-client.css -> dist/titan/ui-client.css
+
+> cfr-free@0.2.3 scan:audit
+> npm audit --audit-level=high --omit=dev
+
+found 0 vulnerabilities
+EXIT=0

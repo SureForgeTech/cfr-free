@@ -7,6 +7,10 @@ so a rebuild of the sandbox loses nothing. The product work it describes is alre
 Base: `main` at `623221f8` (`fix(titles): one account of the default title; cover the multi-title
 pin`), i.e. the state after all six pull requests of the series were merged.
 
+> The canonical copies of these artifacts — the handoff file, the run record, the review packet,
+> the PR body, the patches and the gate logs — live in [`docs/handoff/`](../../docs/handoff); the
+> copies kept here are the ones committed with this archive's first commit.
+
 ## Contents
 
 | File | What it is |
