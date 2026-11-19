@@ -6,7 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { ServiceError } from '../src/core/errors.js';
-import { compareSnapshots } from '../src/core/snapshot-compare.js';
+import { compareSnapshots, SNAPSHOT_RESPONSE_CHAR_BUDGET } from '../src/core/snapshot-compare.js';
 import { Store } from '../src/core/store.js';
 import type { RawSection } from '../src/core/xml.js';
 import { createTestLogger, makeSection } from './helpers.js';
@@ -252,6 +252,48 @@ describe('compareSnapshots', () => {
       expect(result.removed).toHaveLength(100);
       expect(result.added).toHaveLength(100);
       expect(result.truncated).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('bounds the whole response at one character budget', () => {
+    const fixture = snapshotDir();
+    try {
+      // Provisions whose text differs on every line, with long lines: each
+      // summary then carries the bounded hunks at their full length, so the
+      // entries are big enough that the budget — not the entry cap — is what
+      // cuts the list.
+      const count = 40;
+      const lines = Array.from(
+        { length: 6 },
+        (_, i) => `Line ${i} of the provision. ${'x'.repeat(900)}`,
+      );
+      const changedFrom = Array.from({ length: count }, (_, i) =>
+        makeSection({ citation: `4.c${String(i)}`, text: lines.join('\n') }),
+      );
+      const changedTo = changedFrom.map((section, i) => ({
+        ...section,
+        text: [...lines]
+          .reverse()
+          .map((line) => `${line} (${i})`)
+          .join('\n'),
+      }));
+      writeSnapshot(fromPath(fixture.dir), changedFrom, FROM_DATE);
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(to, changedTo, TO_DATE);
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      const cost = [...result.added, ...result.removed, ...result.changed].reduce(
+        (sum, entry) => sum + JSON.stringify(entry).length,
+        0,
+      );
+      expect(cost).toBeLessThanOrEqual(SNAPSHOT_RESPONSE_CHAR_BUDGET);
+      expect(result.truncated).toBe(true);
+      // The budget cuts the list, not the whole category: the changes that
+      // fit are shown, and the rest are reported as cut.
+      expect(result.changed.length).toBeGreaterThan(0);
+      expect(result.changed.length).toBeLessThan(count);
     } finally {
       fixture.cleanup();
     }

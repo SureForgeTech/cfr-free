@@ -35,6 +35,26 @@ import { IMAGE_MARKER_PREFIX } from './xml.js';
 /** Entries listed per category on the wire; counts beyond the cap set `truncated`. */
 export const SNAPSHOT_CHANGE_CAP = CHANGE_LIST_CAP;
 
+/**
+ * One character budget over the whole comparison response.
+ *
+ * The per-list cap ({@link SNAPSHOT_CHANGE_CAP}) and the per-entry text bounds
+ * keep any ONE entry small; nothing bounded the RESPONSE. Three lists of 100
+ * entries, each carrying a bounded summary, was around a megabyte of
+ * structured payload — and about twice that on the wire, because the text
+ * channel renders the same information again.
+ *
+ * The budget is split into three equal shares, one per category, so every
+ * category is represented: a comparison of two wholesale rebuilds still shows
+ * what was added, what was removed and what changed, each within its share. A
+ * share that is not spent is not lent to the others, so the bound is the same
+ * for every comparison.
+ */
+export const SNAPSHOT_RESPONSE_CHAR_BUDGET = 200_000;
+
+/** One category's share of {@link SNAPSHOT_RESPONSE_CHAR_BUDGET}. */
+const CATEGORY_CHAR_BUDGET = Math.floor(SNAPSHOT_RESPONSE_CHAR_BUDGET / 3);
+
 /** Changed lines shown in one entry's summary; more set the summary's `truncated` flag. */
 export const SUMMARY_HUNK_CAP = 10;
 
@@ -108,8 +128,37 @@ export interface SnapshotComparison {
   readonly added: readonly SnapshotChange[];
   readonly removed: readonly SnapshotChange[];
   readonly changed: readonly SnapshotChange[];
-  /** True when any category list was cut at {@link SNAPSHOT_CHANGE_CAP}. */
+  /**
+   * True when any category list was cut — at the entry cap
+   * ({@link SNAPSHOT_CHANGE_CAP}) or at the response budget
+   * ({@link SNAPSHOT_RESPONSE_CHAR_BUDGET}).
+   */
   readonly truncated: boolean;
+}
+
+/**
+ * Take entries while the category's character budget lasts.
+ *
+ * An entry's cost is its JSON size: the same bytes the structured payload
+ * carries (the text channel renders the same information, so the wire carries
+ * roughly twice this). One entry always fits a share — the per-entry bounds
+ * cap an entry at a few kilobytes, a share at tens of kilobytes — so a
+ * category that has changes always shows at least one of them.
+ */
+function takeWithinBudget(
+  citations: readonly string[],
+  build: (citation: string) => SnapshotChange,
+): { readonly entries: SnapshotChange[]; readonly cut: boolean } {
+  const entries: SnapshotChange[] = [];
+  let spent = 0;
+  for (const citation of citations) {
+    const entry = build(citation);
+    const cost = JSON.stringify(entry).length;
+    if (spent + cost > CATEGORY_CHAR_BUDGET) return { entries, cut: true };
+    spent += cost;
+    entries.push(entry);
+  }
+  return { entries, cut: false };
 }
 
 /** Cut a coarse summary block at the character bound, on a nearby line boundary. */
@@ -389,10 +438,30 @@ export function compareSnapshots(
         row: toStore.getProvision(citation),
       });
 
-      const truncated =
+      const capCut =
         diff.changed.length > SNAPSHOT_CHANGE_CAP ||
         diff.added.length > SNAPSHOT_CHANGE_CAP ||
         diff.removed.length > SNAPSHOT_CHANGE_CAP;
+      const added = takeWithinBudget(diff.added.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        presenceChange(
+          citation,
+          { issueDate: fromIssueDate, row: null },
+          toSide(citation),
+          'added',
+        ),
+      );
+      const removed = takeWithinBudget(diff.removed.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        presenceChange(
+          citation,
+          fromSide(citation),
+          { issueDate: toIssueDate, row: null },
+          'removed',
+        ),
+      );
+      const changed = takeWithinBudget(diff.changed.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        changedChange(citation, fromSide(citation), toSide(citation)),
+      );
+      const budgetCut = added.cut || removed.cut || changed.cut;
       const result: SnapshotComparison = {
         // The paths are the ones the CALLER named, not the resolved ones:
         // a response that repeats the server's absolute paths discloses the
@@ -400,36 +469,16 @@ export function compareSnapshots(
         from: { path: fromPath, issueDate: fromIssueDate },
         to: { path: toPath, issueDate: toIssueDate },
         part,
-        added: diff.added
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) =>
-            presenceChange(
-              citation,
-              { issueDate: fromIssueDate, row: null },
-              toSide(citation),
-              'added',
-            ),
-          ),
-        removed: diff.removed
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) =>
-            presenceChange(
-              citation,
-              fromSide(citation),
-              { issueDate: toIssueDate, row: null },
-              'removed',
-            ),
-          ),
-        changed: diff.changed
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) => changedChange(citation, fromSide(citation), toSide(citation))),
-        truncated,
+        added: added.entries,
+        removed: removed.entries,
+        changed: changed.entries,
+        truncated: capCut || budgetCut,
       };
       deps.logger.info('snapshot comparison computed', {
         changed: diff.changed.length,
         added: diff.added.length,
         removed: diff.removed.length,
-        truncated,
+        truncated: result.truncated,
       });
       return result;
     } finally {

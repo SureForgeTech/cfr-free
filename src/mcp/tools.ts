@@ -7,7 +7,7 @@ import type { EcfrApi } from '../core/ecfr.js';
 import { redlineSection } from '../core/redline.js';
 import { ARCHIVE_FLOOR } from '../core/archive.js';
 import { historicalSection } from '../core/historical.js';
-import { compareSnapshots } from '../core/snapshot-compare.js';
+import { compareSnapshots, SNAPSHOT_RESPONSE_CHAR_BUDGET } from '../core/snapshot-compare.js';
 import { DEFAULT_TITLE } from '../core/titles.js';
 import {
   SEARCH_QUERY_MAX_LENGTH,
@@ -352,7 +352,10 @@ const snapshotComparisonOutputSchema = z.object({
   changed: z.array(snapshotChangeSchema),
   truncated: z
     .boolean()
-    .describe(`true when any category list was cut at the ${CHANGE_LIST_CAP}-entry cap`),
+    .describe(
+      `true when any category list was cut — at the ${CHANGE_LIST_CAP}-entry cap or at the ` +
+        `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character response budget`,
+    ),
 });
 
 /** Register all tools on the server; `deps.ecfr` gates the three eCFR-backed tools (get_section_at, diff_issues, redline). */
@@ -662,7 +665,11 @@ export function registerTools(
         'and a short line-level summary of the differing text (add/del hunks with 1-based anchors ' +
         'into each side; each hunk and each entry summary is character-bounded, and `truncated: true` ' +
         'when text or differing lines exist beyond the shown bound — including a very long provision, ' +
-        'which falls back to one excerpt block per side). A retitle with an ' +
+        'which falls back to one excerpt block per side). The whole response is bounded: the three ' +
+        'category lists share a ' +
+        `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character budget, so a comparison of two wholesale ` +
+        'rebuilds is cut rather than megabytes long, and `truncated: true` says so; narrow the ' +
+        'comparison with `part` to see one part in full. A retitle with an ' +
         'unchanged body is reported as a change (`headingChanged: true`, empty text summary); a ' +
         '`imageContent: true` flag marks a provision whose rating-table graphics are not in the text. ' +
         'Optional `part` restricts the comparison to one CFR part. Both snapshots must be REGULAR ' +
