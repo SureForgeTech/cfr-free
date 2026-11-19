@@ -402,7 +402,7 @@ describe('main', () => {
     const { err, io } = makeIo({ CFR_LOG_LEVEL: 'error' }, createTestLogger());
     const code = await main(['compare', 'missing.sqlite', 'also-missing.sqlite'], io);
     expect(code).toBe(2);
-    expect(err.join('')).toContain('no snapshot at ');
+    expect(err.join('')).toContain('the from snapshot does not exist');
     expect(err.join('')).toContain('cfr-free export');
   });
 
@@ -420,7 +420,9 @@ describe('main', () => {
 
       const foreign = await main(['compare', foreignPath, snapshotPath], io);
       expect(foreign).toBe(2);
-      expect(err.join('')).toContain('cannot open');
+      expect(err.join('')).toContain('the from snapshot could not be opened');
+      // The server's own path stays out of the message.
+      expect(err.join('')).not.toContain(foreignPath);
     } finally {
       temp.cleanup();
     }

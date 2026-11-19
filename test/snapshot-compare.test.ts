@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -366,21 +367,131 @@ describe('compareSnapshots', () => {
         ServiceError,
       );
       expect(() => compareSnapshots({ logger: createTestLogger() }, missing, paths.to)).toThrow(
-        /no snapshot at .*cfr-free export/,
+        /the from snapshot does not exist.*cfr-free export/,
       );
       const foreign = path.join(fixture.dir, 'foreign.sqlite');
       writeFileSync(foreign, 'not a database');
       expect(() => compareSnapshots({ logger: createTestLogger() }, foreign, paths.to)).toThrow(
-        /not a cfr-free snapshot|cannot open index/,
-      );
-      const directory = path.join(fixture.dir, 'directory.sqlite');
-      mkdirSync(directory);
-      expect(() => compareSnapshots({ logger: createTestLogger() }, directory, paths.to)).toThrow(
-        /cannot open/,
+        /the from snapshot could not be opened/,
       );
       expect(() => compareSnapshots({ logger: createTestLogger() }, paths.to, paths.from)).toThrow(
         /after the to snapshot/,
       );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('refuses a snapshot that is not a regular file, before any database open', () => {
+    const fixture = snapshotDir();
+    try {
+      const paths = standardFixture(fixture.dir);
+      const directory = path.join(fixture.dir, 'directory.sqlite');
+      mkdirSync(directory);
+      expect(() => compareSnapshots({ logger: createTestLogger() }, directory, paths.to)).toThrow(
+        /the from snapshot is not a regular file/,
+      );
+
+      // A FIFO is the case that matters: opening one with SQLite BLOCKS the
+      // synchronous open forever, so a model-supplied path would freeze the
+      // whole stdio server. The refusal has to happen BEFORE the open. The
+      // writer below keeps the pipe from blocking if the guard is ever
+      // removed, so a regression fails this test instead of hanging it.
+      const fifo = path.join(fixture.dir, 'fifo.sqlite');
+      const made = spawnSync('mkfifo', [fifo]);
+      if (made.status === 0) {
+        const writer = spawn('sh', ['-c', `head -c 100 /dev/zero > "${fifo}"`], {
+          stdio: 'ignore',
+        });
+        try {
+          expect(() => compareSnapshots({ logger: createTestLogger() }, fifo, paths.to)).toThrow(
+            /the from snapshot is not a regular file/,
+          );
+        } finally {
+          writer.kill();
+        }
+      }
+
+      // A snapshot inside a directory nobody may read cannot be inspected at
+      // all — that is neither "missing" nor "not a regular file", and the
+      // message says so. (Root reads everything and Windows has no POSIX
+      // permissions, so the case is skipped there.)
+      if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+        const locked = path.join(fixture.dir, 'locked');
+        mkdirSync(locked);
+        const hidden = path.join(locked, 'hidden.sqlite');
+        writeFileSync(hidden, 'not a database');
+        chmodSync(locked, 0o000);
+        try {
+          expect(() => compareSnapshots({ logger: createTestLogger() }, hidden, paths.to)).toThrow(
+            /the from snapshot could not be read/,
+          );
+        } finally {
+          chmodSync(locked, 0o700);
+        }
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('tells a snapshot that cannot be there from one that cannot be read', () => {
+    const fixture = snapshotDir();
+    try {
+      const paths = standardFixture(fixture.dir);
+      // A path whose parent component is a regular file cannot name a
+      // snapshot at all — that is "does not exist", not "could not be read".
+      const notADirectory = path.join(fixture.dir, 'plain.sqlite');
+      writeFileSync(notADirectory, 'not a database');
+      expect(() =>
+        compareSnapshots(
+          { logger: createTestLogger() },
+          path.join(notADirectory, 'child.sqlite'),
+          paths.to,
+        ),
+      ).toThrow(/the from snapshot does not exist/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps the server paths and raw SQLite text out of client-facing errors', () => {
+    const fixture = snapshotDir();
+    try {
+      const paths = standardFixture(fixture.dir);
+      const foreign = path.join(fixture.dir, 'foreign.sqlite');
+      writeFileSync(foreign, 'not a database');
+      const missing = path.join(fixture.dir, 'missing.sqlite');
+
+      for (const bad of [foreign, missing]) {
+        let message = '';
+        try {
+          compareSnapshots({ logger: createTestLogger() }, bad, paths.to);
+        } catch (error) {
+          message = error instanceof Error ? error.message : String(error);
+        }
+        // The client is told WHICH side failed and what to do; it is not told
+        // where the server's files live, and it is not handed raw SQLite text.
+        expect(message).not.toContain(fixture.dir);
+        expect(message).not.toContain('SQLITE');
+        expect(message).not.toMatch(/not a database/);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('reports the paths the caller named, not the resolved ones', () => {
+    const fixture = snapshotDir();
+    try {
+      const paths = standardFixture(fixture.dir);
+      // A path that resolves elsewhere than it is written: the response
+      // repeats what the caller asked for and does not disclose the server's
+      // resolved directory layout.
+      const from = `${paths.from}/../from.sqlite`;
+      const comparison = compareSnapshots({ logger: createTestLogger() }, from, paths.to);
+      expect(comparison.from.path).toBe(from);
+      expect(comparison.to.path).toBe(paths.to);
     } finally {
       fixture.cleanup();
     }
@@ -445,11 +556,20 @@ describe('compareSnapshots', () => {
         /records no issue date/,
       );
       expect(() => compareSnapshots({ logger: createTestLogger() }, invalidDate, valid)).toThrow(
-        /snapshot issue date.*YYYY-MM-DD/,
+        /recorded issue date.*YYYY-MM-DD/,
       );
-      expect(() => compareSnapshots({ logger: createTestLogger() }, oldSchema, valid)).toThrow(
-        /schema version 1/,
+      // The client gets guidance, not the diagnostic: the detail (the schema
+      // version the file holds) stays in the server log.
+      const oldSchemaLogger = createTestLogger();
+      expect(() => compareSnapshots({ logger: oldSchemaLogger }, oldSchema, valid)).toThrow(
+        /the from snapshot could not be opened/,
       );
+      expect(
+        oldSchemaLogger.records.some(
+          (record) =>
+            record.level === 'error' && /schema version 1/.test(String(record.fields?.message)),
+        ),
+      ).toBe(true);
     } finally {
       fixture.cleanup();
     }
