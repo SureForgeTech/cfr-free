@@ -271,7 +271,7 @@ paths:
       summary: Full-text search over the local index
       responses:
         '200':
-          description: 'Ranked hits plus the index freshness envelope; a query that is itself a citation (4.130, 38 CFR 4.16) is pinned first on page 1. Cache-Control: public, max-age=300.'
+          description: 'Ranked hits plus the index freshness envelope; a query that is itself an in-scope citation (4.130, 38 CFR 4.16) is pinned first on page 1. `title` selects the CFR title the search runs in (the default is 38; `all` searches every stored title, and every hit then carries the title it belongs to). Cache-Control: public, max-age=300.'
           headers:
             ETag:
               description: 'Strong validator over the response payload — a quoted sha256 of the exact response bytes ("sha256-<hex>", src/titan/http-server.ts#etagFor). Send it back as If-None-Match to revalidate.'
@@ -313,6 +313,11 @@ paths:
           in: query
           description: 'Restrict to one chapter by Roman-numeral identifier — exact and case-sensitive (e.g. "I").'
           schema: { type: string, minLength: 1, maxLength: 8, pattern: '^[IVXLCDM]+$' }
+        - name: title
+          in: query
+          required: false
+          description: 'The CFR title to search in — a title number (e.g. 32) or `all` (every stored title, each hit labeled with its own). Defaults to Title 38.'
+          schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
         - name: semantic
           in: query
           required: false
@@ -357,6 +362,11 @@ paths:
           in: query
           description: 'Restrict to one chapter by Roman-numeral identifier — exact and case-sensitive (e.g. "I").'
           schema: { type: string, minLength: 1, maxLength: 8, pattern: '^[IVXLCDM]+$' }
+        - name: title
+          in: query
+          required: false
+          description: 'The CFR title to search in — a title number (e.g. 32) or `all` (every stored title, each hit labeled with its own). Defaults to Title 38.'
+          schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
         - name: semantic
           in: query
           required: false
@@ -368,7 +378,7 @@ paths:
       summary: Full text of one section or appendix
       responses:
         '200':
-          description: 'Markdown + text + metadata + cross-references. Cache-Control: public, max-age=3600.'
+          description: 'Markdown + text + metadata + cross-references, and the CFR title the provision belongs to. With no title in the request or citation text, the read checks only Title 38. A miss returns 404 not_found with title=N guidance for any other stored titles holding the citation. Cache-Control: public, max-age=3600.'
           headers:
             ETag:
               description: 'Strong validator over the response payload — a quoted sha256 of the exact response bytes ("sha256-<hex>", src/titan/http-server.ts#etagFor). Send it back as If-None-Match to revalidate.'
@@ -394,6 +404,11 @@ paths:
           required: true
           description: 'Citation or appendix name — 4.125, § 4.125, or 38 CFR 4.125 — URL-encoded (≤ 120 chars).'
           schema: { type: string, maxLength: 120 }
+        - name: title
+          in: query
+          required: false
+          description: 'The CFR title to read within — a title number (e.g. 32). If omitted, the read uses the title named in the citation or defaults to Title 38. A miss returns 404 not_found. On an untitled miss, the message names any other stored titles holding the citation and suggests passing title=N. The value `all` is reserved for searches.'
+          schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
     head:
       summary: Headers-only section probe
       responses:
@@ -417,6 +432,11 @@ paths:
           required: true
           description: 'Citation or appendix name — 4.125, § 4.125, or 38 CFR 4.125 — URL-encoded (≤ 120 chars).'
           schema: { type: string, maxLength: 120 }
+        - name: title
+          in: query
+          required: false
+          description: 'The CFR title to read within — a title number (e.g. 32). If omitted, the read uses the title named in the citation or defaults to Title 38. A miss returns 404 not_found. On an untitled miss, the message names any other stored titles holding the citation and suggests passing title=N. The value `all` is reserved for searches.'
+          schema: { type: string, pattern: '^(all|[1-9]|[1-4][0-9]|50)$' }
   /api/v1/browse:
     # source: src/titan/http-server.ts#dispatch (router), handleBrowse (revalidatable send)
     get:
@@ -842,7 +862,7 @@ components:
         notice:
           {
             type: [string, 'null'],
-            description: 'Stale-index warning. NOTE: `notice` is NOT one field with one meaning across the API — on the search and section responses it is the stale-index warning, while on the diff and redline responses it is the date-semantics disclaimer. A client that renders a generic `notice` must not generalise from one to the other.',
+            description: 'Contains a stale-index warning when applicable. If the query is a citation naming a title outside the search scope, it also suggests passing title=N. Null when neither applies.',
           }
         matchedTerms:
           type: array
@@ -860,6 +880,7 @@ components:
     SearchHit:
       type: object
       required:
+        - title
         - citation
         - heading
         - part
@@ -874,6 +895,11 @@ components:
         - inResults
         - partTitle
       properties:
+        title:
+          {
+            type: integer,
+            description: 'The CFR title this hit belongs to — every hit names its own authority, so two titles are never blended into one unlabeled list.',
+          }
         citation: { type: string }
         heading: { type: string }
         part: { type: [string, 'null'] }
@@ -907,6 +933,7 @@ components:
     SectionDetail:
       type: object
       required:
+        - title
         - citation
         - kind
         - heading
@@ -925,6 +952,7 @@ components:
         - indexStale
         - notice
       properties:
+        title: { type: integer, description: 'The CFR title this provision belongs to.' }
         citation: { type: string }
         kind: { type: string, enum: [section, appendix] }
         heading: { type: string }
@@ -971,7 +999,7 @@ components:
           description: >-
             Structural Citation Support diagnostics (populated by
             src/core/service.ts#getSection): distinct citing sections
-            overall (`total`), restricted to citing sections sharing this
+            within the provision's title (`total`), restricted to those sharing this
             section's part (`part`), and further to those sharing its part
             AND subject group (`subjectGroup`). Self-citations are excluded
             and repeated references from one citing section count once; a

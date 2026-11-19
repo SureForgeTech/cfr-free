@@ -82,6 +82,9 @@ const searchOutputSchema = z.object({
   unmatchedTerms: z.array(z.string()),
   hits: z.array(
     z.object({
+      title: z
+        .number()
+        .describe('the CFR title this hit belongs to — every hit names its own authority'),
       citation: z.string(),
       citationDisplay: z.string(),
       sourceUrl: z.string(),
@@ -100,6 +103,7 @@ const searchOutputSchema = z.object({
 });
 
 const sectionOutputSchema = z.object({
+  title: z.number().describe('the CFR title this provision belongs to'),
   citation: z.string(),
   kind: z.enum(['section', 'appendix']),
   heading: z.string(),
@@ -360,9 +364,12 @@ export function registerTools(
   server.registerTool(
     'search_regulations',
     {
-      title: 'Search Title 38 CFR regulations',
+      title: 'Search CFR regulations',
       description:
-        'Full-text search across the local Title 38 (VA) CFR index using ranked keyword matching. ' +
+        'Full-text search across the local CFR index using ranked keyword matching. ' +
+        'The search runs in Title 38 (VA) by default; `title` selects another title ' +
+        '(e.g. 32 for National Defense) or `all` for every stored title — every hit carries ' +
+        'the title it belongs to, so two authorities are never blended into one unlabeled list. ' +
         'Returns section citations, headings, relevance snippets, bm25 scores (lower is better) ' +
         'and the query terms visible in each hit. ' +
         'The CANDIDATE SET is every provision matching AT LEAST ONE query term, so a provision ' +
@@ -376,9 +383,9 @@ export function registerTools(
         '`kind` to restrict results to one provision kind ("section" or "appendix"), and ' +
         '`chapter` to scope to one chapter by its Roman-numeral identifier (e.g. "I"; exact, case-sensitive). ' +
         'Follow up with get_section to read a hit in full. ' +
-        'If the query itself is a citation (e.g. "4.130" or "38 CFR 4.16"), that exact ' +
-        'section is pinned to the top of page 1 (totals include the pin on every page) ' +
-        "and marked `direct: true` — the reliable client signal; the pinned hit's " +
+        'If the query itself is a citation (e.g. "4.130" or "38 CFR 4.16"), matching ' +
+        'sections in scope are pinned to the top of page 1 (totals include pins on every page) ' +
+        "and marked `direct: true`. A citation that names a title pins only that title's section. The pinned hit's " +
         '`inResults` flag reports whether it also matched the ranked results. ' +
         'Quoted spans (e.g. "exact regulatory language") are emitted as FTS5 phrase queries — the last token gets a prefix wildcard (so "language" also matches "languages"); earlier tokens are matched exactly. ' +
         'Hits are ranked by LEXICAL OVERLAP with the query, not by legal authority: the first hit is the provision sharing the most words with the query, which is often not the provision that governs the question. ' +
@@ -423,6 +430,13 @@ export function registerTools(
           .regex(/^[IVXLCDM]+$/)
           .optional()
           .describe('restrict to one chapter, exact case-sensitive Roman numeral (e.g. "I")'),
+        title: z
+          .union([z.number().int().min(1).max(50), z.literal('all')])
+          .optional()
+          .describe(
+            'the CFR title to search in (default 38 — Veterans Benefits); "all" searches every ' +
+              'stored title and labels every hit with its own title',
+          ),
       },
       outputSchema: searchOutputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
@@ -436,6 +450,7 @@ export function registerTools(
           part: args.part,
           kind: args.kind,
           chapter: args.chapter,
+          title: args.title,
         });
         const structuredContent: SearchOutput = {
           ...response,
@@ -455,24 +470,37 @@ export function registerTools(
     {
       title: 'Read a CFR section',
       description:
-        'Fetch the full text of one Title 38 CFR section or appendix as markdown. Accepts flexible citations: ' +
+        'Fetch the full text of one CFR section or appendix as markdown. Accepts flexible citations: ' +
         '"4.125", "§ 4.125", "38 CFR 4.125", or appendix names like "Appendix A to Part 4". ' +
-        'Returns heading, hierarchy path, issue date and an ecfr.gov permalink. ' +
+        'Returns heading, hierarchy path, issue date, the CFR title the provision belongs to, ' +
+        'and an ecfr.gov permalink. ' +
+        'A read without a title in the request or citation checks Title 38 only. ' +
+        'A miss returns not_found with title hints for any other stored matches. ' +
         `Also returns \`citationSupport\` — Structural Citation Support diagnostics: how many distinct ` +
-        'indexed sections cite this one, overall and narrowed to the same part and subject group. ' +
+        'sections in this title cite this one, overall and narrowed to the same part and subject group. ' +
         'That vector is diagnostic output only — it never affects search ranking or candidate sets. ' +
         `The body is capped at ${PROVISION_TEXT_CAP} characters; a body that was cut sets \`truncated: true\`, ` +
         'and the truncated text is incomplete — read the rest from the sourceUrl. ' +
         UNTRUSTED_DATA_NOTE,
       inputSchema: {
         citation: z.string().min(1).max(120).describe('the citation to read, e.g. "38 CFR 4.125"'),
+        title: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe(
+            'the CFR title to read within. If omitted, a citation that names a title reads that title. ' +
+              'An untitled citation reads Title 38 only.',
+          ),
       },
       outputSchema: sectionOutputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async (args) =>
       runTool(logger, 'get_section', async () => {
-        const section = service.getSection(args.citation);
+        const section = service.getSection(args.citation, args.title);
         const text = capProvision(section.text);
         const markdown = capProvision(section.markdown);
         const result: SectionOutput = {

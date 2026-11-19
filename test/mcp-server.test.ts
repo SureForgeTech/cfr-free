@@ -81,6 +81,18 @@ describe('MCP server (in-memory transport)', () => {
     }
   });
 
+  it('describes how get_section chooses a title when the title argument is omitted', async () => {
+    const { tools } = await client.listTools();
+    const description = tools.find((tool) => tool.name === 'get_section')?.inputSchema.properties?.[
+      'title'
+    ];
+    expect(description).toMatchObject({
+      description: expect.stringMatching(
+        /a citation that names a title reads that title.*Title 38 only/,
+      ),
+    });
+  });
+
   it('search_regulations returns structured hits', async () => {
     const result = (await client.callTool({
       name: 'search_regulations',

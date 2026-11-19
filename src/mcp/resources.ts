@@ -115,7 +115,8 @@ export function registerResources(server: McpServer, service: CFRService, logger
     },
     async (uri) => {
       try {
-        const section = service.getSection('3.1');
+        // This resource requires Title 38 even when its § 3.1 is absent.
+        const section = service.getSection('3.1', 38);
         // Defense-in-depth: CFRService.getSection throws on a miss today, but
         // a null must never serialize as JSON `null` content — that reads as
         // an indistinguishable-from-success response. ServiceError (not a

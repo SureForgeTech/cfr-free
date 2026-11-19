@@ -3,12 +3,44 @@ export type ParsedCitation =
   | { readonly kind: 'section'; readonly citation: string }
   | { readonly kind: 'appendix'; readonly citation: string };
 
+/** A citation that NAMES the CFR title it belongs to. */
+export interface TitledCitation {
+  readonly kind: 'section' | 'appendix';
+  readonly citation: string;
+  /** The CFR title the citation names (1-50). */
+  readonly title: number;
+}
+
 /** `4.125`, `4.124a`, `17.103` … (section numbers within a part). */
 const SECTION_RE = /^\d{1,3}\.\d{1,4}[a-z]{0,3}$/i;
 const MAX_CITATION_LENGTH = 120;
 
+/** The CFR titles eCFR serves (49 titles plus the reserved ones). */
+const MIN_TITLE = 1;
+const MAX_TITLE = 50;
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The citation BODY: the provision a citation names, with no title prefix.
+ *
+ * One implementation, shared by both parsers below, so the two can never
+ * disagree about what a citation body is.
+ */
+function parseCitationBody(text: string): ParsedCitation | null {
+  if (/^appendix\b/i.test(text)) return { kind: 'appendix', citation: text };
+
+  // The dotted form matters: `displayCitation` emits `38 C.F.R. § 4.130`
+  // (the paste-ready legal form), so the parser must accept exactly what
+  // the product hands the user — otherwise copying a citation the tool
+  // printed back into the tool yields "invalid input" (review finding
+  // P1-03). The optional dots are per letter and flat, so no ReDoS shape.
+  const withoutSection = text.replace(/^§\s*/, '');
+  const candidate = withoutSection.replace(/\.$/, '').trim();
+  if (!SECTION_RE.test(candidate)) return null;
+  return { kind: 'section', citation: candidate.toLowerCase() };
 }
 
 /**
@@ -18,29 +50,55 @@ function collapseWhitespace(value: string): string {
  * citations (`38 CFR 4.125`, `38 C.F.R. § 4.125` — the dotted legal form
  * the product itself emits), and appendix names (`Appendix A to Part 4`).
  *
+ * The Title-38 forms only: a citation naming another title is refused
+ * here (a frozen expectation, test/citations.test.ts) because this parser
+ * is the Title-38 reader's. {@link normalizeTitledCitation} is the
+ * multi-title reader's counterpart.
+ *
  * @returns `null` when the input is not a recognizable citation.
  */
 export function normalizeCitation(input: string): ParsedCitation | null {
   const trimmed = collapseWhitespace(input);
   if (trimmed.length === 0 || trimmed.length > MAX_CITATION_LENGTH) return null;
-
   if (/^appendix\b/i.test(trimmed)) return { kind: 'appendix', citation: trimmed };
-
-  // Two flat patterns instead of one nested-quantifier pattern: identical
-  // behavior, and linear-time for ReDoS checkers (eslint-plugin-security).
-  //
-  // The dotted form matters: `displayCitation` emits `38 C.F.R. § 4.130`
-  // (the paste-ready legal form), so the parser must accept exactly what
-  // the product hands the user — otherwise copying a citation the tool
-  // printed back into the tool yields "invalid input" (review finding
-  // P1-03). The optional dots are per letter and flat, so no ReDoS shape.
   const withoutTitle = trimmed
     .replace(/^38\s+c\.?f\.?r\.?\s*/i, '')
     .replace(/^c\.?f\.?r\.?\s*/i, '');
-  const withoutSection = withoutTitle.replace(/^§\s*/, '');
-  const candidate = withoutSection.replace(/\.$/, '').trim();
-  if (!SECTION_RE.test(candidate)) return null;
-  return { kind: 'section', citation: candidate.toLowerCase() };
+  return parseCitationBody(withoutTitle);
+}
+
+/**
+ * Parse a citation that NAMES its CFR title (`32 CFR § 70.1`,
+ * `38 C.F.R. § 4.130`).
+ *
+ * WHY A SECOND PARSER. {@link normalizeCitation} is the Title-38 reader's
+ * citation parser: it accepts the dotted legal form the product emits for
+ * Title 38 and REFUSES a citation naming any other title — a frozen
+ * expectation (test/citations.test.ts). A multi-title index must also read
+ * a citation that names the title it belongs to, for two reasons: the
+ * display form this product prints for another title (`32 CFR § 70.1`)
+ * would otherwise not be readable by its own reader (the round-trip
+ * P1-03 is about), and a citation that names its title is UNAMBIGUOUS —
+ * it settles the very ambiguity an untitled citation raises when two
+ * titles hold the same provision.
+ *
+ * The two parsers share one body parser, so they cannot disagree about
+ * what a citation body is; they differ only in the title prefix they
+ * accept.
+ *
+ * @returns `null` when the input names no title, or names one that is not
+ *   a CFR title.
+ */
+export function normalizeTitledCitation(input: string): TitledCitation | null {
+  const trimmed = collapseWhitespace(input);
+  if (trimmed.length === 0 || trimmed.length > MAX_CITATION_LENGTH) return null;
+  const match = /^(\d{1,2})\s+c\.?f\.?r\.?\.?\s*(.*)$/i.exec(trimmed);
+  if (match === null) return null;
+  const title = Number(match[1]);
+  if (!Number.isInteger(title) || title < MIN_TITLE || title > MAX_TITLE) return null;
+  const body = parseCitationBody(match[2] ?? '');
+  if (body === null) return null;
+  return { kind: body.kind, citation: body.citation, title };
 }
 
 /**

@@ -295,6 +295,7 @@ function makeHarness(): Harness {
 
 function sectionBody(citation: string, heading: string): Record<string, unknown> {
   return {
+    title: 38,
     citation,
     kind: 'section',
     heading,
@@ -702,6 +703,25 @@ describe('UI copy-a-citation (M5 slice 1)', () => {
     expect(block.value).toContain('https://www.ecfr.gov/on/2026-10-16/title-38/section-4.130');
   });
 
+  it.each([
+    ['section', '70.1', '32 CFR § 70.1'],
+    ['appendix', 'Appendix A to Part 70', '32 CFR Appendix A to Part 70'],
+  ])('uses the loaded title in the citation block for a %s', async (kind, citation, display) => {
+    const harness = makeHarness();
+    await harness.navigate('#/section/' + encodeURIComponent(`32 CFR ${citation}`));
+    harness.calls[0]?.respond(true, {
+      ...sectionBody(citation, 'Discharge review procedures.'),
+      title: 32,
+      kind,
+      sourceUrlAtIndexDate: `https://www.ecfr.gov/on/2026-10-16/title-32/${kind}-${encodeURIComponent(citation)}`,
+    });
+    await harness.flush();
+
+    const lines = harness.element('citation-block').value.split('\n');
+    expect(lines[0]).toBe(display);
+    expect(lines[2]).toBe(`Source: 32 CFR ${citation} (issue date 2026-10-16)`);
+  });
+
   it('warns that image content is not included when the text carries the marker', async () => {
     const harness = makeHarness();
     await harness.navigate('#/section/4.85');
@@ -753,6 +773,36 @@ describe('UI copy-a-citation (M5 slice 1)', () => {
     harness.element('copy-citation').dispatch('click', { preventDefault: () => undefined });
     await harness.flush();
     expect(harness.element('copy-status').textContent).toContain('blocked');
+  });
+});
+
+describe('UI section cross-links', () => {
+  it('opens available references and citing provisions in the loaded title', async () => {
+    const harness = makeHarness();
+    await harness.navigate('#/section/32%20CFR%2070.1');
+    expect(harness.calls[0]?.url).toBe('/api/v1/sections/32%20CFR%2070.1');
+    harness.calls[0]?.respond(true, {
+      ...sectionBody('70.1', 'Discharge review procedures.'),
+      title: 32,
+      references: [
+        { citation: '70.2', available: true },
+        { citation: '70.3', available: false },
+      ],
+      citedBy: ['70.4'],
+    });
+    await harness.flush();
+
+    const references = harness.element('section-references').childNodes;
+    const referenceLink = references[0]?.firstChild;
+    const citedByLink = harness.element('section-citedby').firstChild?.firstChild;
+    expect(referenceLink?.textContent).toBe('70.2');
+    expect(citedByLink?.textContent).toBe('70.4');
+    expect(references[1]?.firstChild).toBeNull();
+
+    await harness.navigate(referenceLink?.href ?? '');
+    expect(harness.calls[1]?.url).toBe('/api/v1/sections/32%20CFR%2070.2');
+    await harness.navigate(citedByLink?.href ?? '');
+    expect(harness.calls[2]?.url).toBe('/api/v1/sections/32%20CFR%2070.4');
   });
 });
 
