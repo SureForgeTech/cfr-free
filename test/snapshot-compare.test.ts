@@ -462,6 +462,70 @@ describe('compareSnapshots', () => {
     }
   });
 
+  it('uses a coarse summary above the comparison’s line cap', () => {
+    const fixture = snapshotDir();
+    try {
+      const from = path.join(fixture.dir, 'from.sqlite');
+      const to = path.join(fixture.dir, 'to.sqlite');
+      // Under the comparison's cap (500 lines per side): the line identity is
+      // computed, so the summary shows the differing lines.
+      const underFrom = Array.from({ length: 400 }, (_, i) => `old ${i}`).join('\n');
+      const underTo = Array.from({ length: 400 }, (_, i) => `new ${i}`).join('\n');
+      writeSnapshot(from, [makeSection({ citation: '4.1', text: underFrom })], FROM_DATE);
+      writeSnapshot(to, [makeSection({ citation: '4.1', text: underTo })], TO_DATE);
+      const under = compareSnapshots({ logger: createTestLogger() }, from, to).changed[0]?.summary;
+      expect(under?.hunks.length).toBeGreaterThan(2);
+
+      // Over it: the coarse excerpt, and no per-line identity claimed. The
+      // line identity is quadratic in the lines compared (~12 ms for two
+      // 2,000-line sides against ~1 ms for two 500-line sides), so the
+      // comparison caps what it walks.
+      const overFrom = Array.from({ length: 600 }, (_, i) => `old ${i}`).join('\n');
+      const overTo = Array.from({ length: 600 }, (_, i) => `new ${i}`).join('\n');
+      writeSnapshot(from, [makeSection({ citation: '4.1', text: overFrom })], FROM_DATE);
+      writeSnapshot(to, [makeSection({ citation: '4.1', text: overTo })], TO_DATE);
+      const over = compareSnapshots({ logger: createTestLogger() }, from, to).changed[0]?.summary;
+      expect(over?.hunks).toHaveLength(2);
+      expect(over?.hunks.map((hunk) => hunk.type)).toEqual(['del', 'add']);
+      expect(over?.truncated).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a large comparison responsive', () => {
+    const fixture = snapshotDir();
+    try {
+      // The worst case the comparison can be handed: many changed provisions,
+      // each far over the line cap (so the line identity is never walked).
+      const count = 30;
+      const lines = Array.from({ length: 2_000 }, (_, i) => `line ${i} ${'x'.repeat(60)}`);
+      const fromSections = Array.from({ length: count }, (_, i) =>
+        makeSection({ citation: `4.c${String(i)}`, text: lines.join('\n') }),
+      );
+      const toSections = fromSections.map((section, i) => ({
+        ...section,
+        text: `${lines.join('\n')} changed ${i}`,
+      }));
+      writeSnapshot(fromPath(fixture.dir), fromSections, FROM_DATE);
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(to, toSections, TO_DATE);
+
+      const started = Date.now();
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      const elapsed = Date.now() - started;
+      expect(result.changed.length).toBeGreaterThan(0);
+      // The comparison does the work on the server's own thread, so it has to
+      // stay responsive even for the worst case a caller can hand it. The
+      // line cap is what bounds the work (the line identity is quadratic:
+      // ~12 ms for two 2,000-line sides against ~1 ms for two 500-line
+      // sides); this bound is the smoke check that it holds.
+      expect(elapsed).toBeLessThan(5_000);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('returns empty categories when the snapshots have the same recorded revision', () => {
     const fixture = snapshotDir();
     try {
