@@ -435,6 +435,26 @@ describe('compareSnapshots', () => {
     }
   });
 
+  it('tells a snapshot that cannot be there from one that cannot be read', () => {
+    const fixture = snapshotDir();
+    try {
+      const paths = standardFixture(fixture.dir);
+      // A path whose parent component is a regular file cannot name a
+      // snapshot at all — that is "does not exist", not "could not be read".
+      const notADirectory = path.join(fixture.dir, 'plain.sqlite');
+      writeFileSync(notADirectory, 'not a database');
+      expect(() =>
+        compareSnapshots(
+          { logger: createTestLogger() },
+          path.join(notADirectory, 'child.sqlite'),
+          paths.to,
+        ),
+      ).toThrow(/the from snapshot does not exist/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('keeps the server paths and raw SQLite text out of client-facing errors', () => {
     const fixture = snapshotDir();
     try {
