@@ -11,6 +11,8 @@
  * The shapes live here now, once. Both callers use them.
  */
 
+import { DEFAULT_TITLE } from './titles.js';
+
 /** The kind of provision a permalink points at. */
 export type PermalinkKind = 'section' | 'appendix';
 
@@ -24,26 +26,35 @@ function kindSegment(kind: PermalinkKind): string {
  *
  * An appendix has no stable anchor on eCFR's site, so it links to the
  * site's search for the appendix name; a section links to its own page.
+ *
+ * The title is the provision's OWN title (default {@link DEFAULT_TITLE}):
+ * eCFR serves every title under its own path, so a permalink that named
+ * the wrong title would point at a different provision (or at nothing).
  */
-export function sourceUrlFor(citation: string, kind: PermalinkKind): string {
+export function sourceUrlFor(
+  citation: string,
+  kind: PermalinkKind,
+  title: number = DEFAULT_TITLE,
+): string {
   const encoded = encodeURIComponent(citation);
   if (kind === 'appendix') {
-    return `https://www.ecfr.gov/search?searchTerm=${encoded}&titles=38`;
+    return `https://www.ecfr.gov/search?searchTerm=${encoded}&titles=${title}`;
   }
-  return `https://www.ecfr.gov/current/title-38/section-${encoded}`;
+  return `https://www.ecfr.gov/current/title-${title}/section-${encoded}`;
 }
 
 /**
  * The permalink to a provision as it stood at a given issue date.
  *
- * eCFR serves every issue date of Title 38 under `/on/<date>/title-38/…`, so
- * this shape is the same for both kinds.
+ * eCFR serves every issue date of every title under `/on/<date>/title-N/…`,
+ * so this shape is the same for both kinds.
  */
 export function datedSourceUrlFor(
   citation: string,
   kind: PermalinkKind,
   issueDate: string,
+  title: number = DEFAULT_TITLE,
 ): string {
   const encoded = encodeURIComponent(citation);
-  return `https://www.ecfr.gov/on/${issueDate}/title-38/${kindSegment(kind)}-${encoded}`;
+  return `https://www.ecfr.gov/on/${issueDate}/title-${title}/${kindSegment(kind)}-${encoded}`;
 }

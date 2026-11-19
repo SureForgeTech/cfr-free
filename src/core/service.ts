@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ServiceError } from './errors.js';
-import { normalizeCitation } from './citations.js';
+import { normalizeCitation, normalizeTitledCitation } from './citations.js';
 import { datedSourceUrlFor, sourceUrlFor } from './urls.js';
 import { extractReferences } from './references.js';
 import { syncChangesSchema, type SyncChanges } from './changes.js';
@@ -23,7 +23,7 @@ import {
   type QueryTerm,
   visibleMatches,
 } from './query.js';
-import { DEFAULT_TITLE, Store, type SearchHit } from './store.js';
+import { DEFAULT_TITLE, Store, type SearchHit, type SectionRow, type TitleScope } from './store.js';
 
 /**
  * Application facade shared by the MCP server and the HTTP API. All input
@@ -38,6 +38,21 @@ import { DEFAULT_TITLE, Store, type SearchHit } from './store.js';
  */
 export const SEARCH_QUERY_MIN_LENGTH = 3;
 export const SEARCH_QUERY_MAX_LENGTH = 200;
+
+/**
+ * The title a read is scoped to: one title number, or the literal `all`.
+ *
+ * The wire forms differ — an MCP client sends a number, an HTTP client a
+ * query string, a CLI user a flag — so the SERVICE owns the parse: every
+ * surface hands the raw value over and this schema decides what it means.
+ * A canonical decimal STRING is accepted (that is what a query string carries), and
+ * `all` is accepted only where the surface allows it (a search); a section
+ * read refuses it afterwards, with a message that says why.
+ */
+const titleScopeSchema = z.preprocess(
+  (value) => (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value) ? Number(value) : value),
+  z.union([z.literal('all'), z.number().int().min(1).max(50)]),
+);
 
 const searchInputSchema = z.object({
   query: z.string().trim().min(SEARCH_QUERY_MIN_LENGTH).max(SEARCH_QUERY_MAX_LENGTH),
@@ -54,7 +69,11 @@ const searchInputSchema = z.object({
     .max(8)
     .regex(/^[IVXLCDM]+$/)
     .optional(),
+  title: titleScopeSchema.optional(),
 });
+
+/** The title a read names, parsed on its own (a section read takes no query). */
+const titleInputSchema = z.object({ title: titleScopeSchema.optional() });
 
 export interface SearchInput {
   readonly query: string;
@@ -63,10 +82,21 @@ export interface SearchInput {
   readonly part?: string | undefined;
   readonly kind?: 'section' | 'appendix' | undefined;
   readonly chapter?: string | undefined;
+  /**
+   * The CFR title the search runs in: a title number, or the literal `all`
+   * (every stored title — a search-only scope). Absent means Title 38, the
+   * wire-compatible default.
+   */
+  readonly title?: number | string | undefined;
 }
 
 /** A search hit dressed for human/legal consumption. */
 export interface PresentedHit extends Omit<SearchHit, 'issueDate'> {
+  /**
+   * The CFR title this hit belongs to — inherited from the store's row, so
+   * a hit in a cross-title search says which authority it came from.
+   */
+  readonly title: number;
   /** Paste-ready legal citation, e.g. `38 C.F.R. § 4.130`. */
   readonly citationDisplay: string;
   /** Permalink to the provision on ecfr.gov. */
@@ -108,7 +138,7 @@ export interface SearchResponse {
   readonly indexIssueDate: string | null;
   /** True when the local index is older than CFR_MAX_AGE_DAYS. */
   readonly indexStale: boolean;
-  /** Warning to surface to a client when the index is stale; null otherwise. */
+  /** Stale-index warning and out-of-scope citation guidance, when applicable. */
   readonly notice: string | null;
   /**
    * The query's content terms that the returned hits answered.
@@ -169,6 +199,13 @@ export interface BrowseInput {
 }
 
 export interface SectionDetail {
+  /**
+   * The CFR title this provision belongs to.
+   *
+   * A read never blends two authorities: the title says which one this
+   * text is (multi-title design, 2026-11-13).
+   */
+  readonly title: number;
   readonly citation: string;
   readonly kind: 'section' | 'appendix';
   readonly heading: string;
@@ -281,6 +318,19 @@ function collectPartTitles(node: StructureNode, into: Map<string, string>): void
  */
 type Hints = Readonly<Record<string, Readonly<Record<string, string>>>>;
 
+/**
+ * The guidance for a title, shared by the search and the section read.
+ *
+ * The rule is one: a title is a CFR title NUMBER (1-50), or the literal
+ * `all` — and `all` is a search-only scope, so a read that names it is
+ * refused with its own message further down.
+ */
+const TITLE_HINTS: Readonly<Record<string, string>> = {
+  invalid_union: 'the title must be a CFR title number (1-50) or `all`',
+  too_small: 'the title number starts at 1',
+  too_big: 'the title number may be at most 50',
+};
+
 const SEARCH_HINTS: Hints = {
   query: {
     too_small: `the query needs at least ${SEARCH_QUERY_MIN_LENGTH} characters`,
@@ -303,6 +353,7 @@ const SEARCH_HINTS: Hints = {
     too_big: 'the chapter may be at most 8 characters',
     invalid_format: 'the chapter must be a Roman numeral such as I, II or IV',
   },
+  title: TITLE_HINTS,
 };
 
 /**
@@ -341,6 +392,7 @@ const CITATION_HINTS: Hints = {
     too_small: 'the citation must be at least one character',
     too_big: 'the citation may be at most 120 characters',
   },
+  title: TITLE_HINTS,
 };
 
 /**
@@ -397,9 +449,20 @@ function kindForCitation(citation: string): 'section' | 'appendix' {
   return /^\d/.test(citation) ? 'section' : 'appendix';
 }
 
-/** Paste-ready display form for hits (`38 C.F.R. § 4.130`). */
-function displayCitation(kind: 'section' | 'appendix', citation: string): string {
-  return kind === 'section' ? `38 C.F.R. § ${citation}` : citation;
+/**
+ * Paste-ready display form for hits.
+ *
+ * Title 38 keeps its published form (`38 C.F.R. § 4.130`): that string is a
+ * frozen contract — SPEC §6 and the tests that pin it. Every other title
+ * uses the plain form (`32 CFR § 70.1`). The display form must NAME the
+ * authority, because two authorities are never blended into one unlabeled
+ * list (multi-title design, 2026-11-13). Title 38 appendices keep their
+ * bare names. Other appendices carry their title prefix.
+ */
+function displayCitation(kind: 'section' | 'appendix', citation: string, title: number): string {
+  if (kind === 'appendix') return title === DEFAULT_TITLE ? citation : `${title} CFR ${citation}`;
+  if (title === DEFAULT_TITLE) return `38 C.F.R. § ${citation}`;
+  return `${title} CFR § ${citation}`;
 }
 
 /** Strip trailing paragraph designators: `3.350(a)(4)` → `3.350`. */
@@ -412,6 +475,30 @@ function stripParagraphSuffix(query: string): string {
     if (next === stripped) return next;
     stripped = next;
   }
+}
+
+/**
+ * A citation, with the CFR title it NAMES when it names one.
+ *
+ * `32 CFR § 70.1` names Title 32; `4.125` uses the request's scope.
+ */
+interface ResolvedCitation {
+  readonly kind: 'section' | 'appendix';
+  readonly citation: string;
+  readonly title: number | undefined;
+}
+
+/**
+ * The provision a citation names, and the authority it names with it.
+ *
+ * The title-named parser runs FIRST: a citation that names its title is
+ * the form the product prints, and it settles the authority on its own.
+ */
+function parseCitation(input: string): ResolvedCitation | null {
+  const titled = normalizeTitledCitation(input);
+  if (titled !== null) return titled;
+  const plain = normalizeCitation(input);
+  return plain === null ? null : { ...plain, title: undefined };
 }
 
 /** First sentence(s) of a section's text, capped at ~200 chars on a boundary. */
@@ -430,18 +517,25 @@ function excerpt(text: string): string {
 }
 
 /** Stale-index warning shared by search and section reads. */
-function noticeFor(status: IndexStatus): string | null {
+function noticeFor(status: IndexStatus, scope: TitleScope): string | null {
   if (!status.stale) return null;
+  const title = scope === 'all' ? '<title>' : scope;
   return (
     `local index is stale (issue date ${status.issueDate ?? 'unknown'}, ` +
     `synced ${status.syncedAt ?? 'never'}, limit ${status.maxAgeDays} days) — ` +
     'verify against the current eCFR before relying on this text; for the version ' +
     'in force on a past date (e.g. the date of claim) use the eCFR point-in-time ' +
-    'URL /on/<YYYY-MM-DD>/title-38/section-<citation>'
+    `URL /on/<YYYY-MM-DD>/title-${title}/section-<citation>`
   );
 }
 
-/** Read-only operations over the local Title 38 index. */
+/**
+ * Read-only operations over the local index.
+ *
+ * The index holds every enabled CFR title's rows; every read is scoped to
+ * the title the caller names or defaults to Title 38. Search can also span
+ * all stored titles (multi-title design, 2026-11-13).
+ */
 export class CFRService {
   private readonly store: Store;
   private readonly maxAgeDays: number;
@@ -452,8 +546,12 @@ export class CFRService {
    */
   private readonly ecfr: EcfrApi | undefined;
   private readonly logger: Logger | undefined;
-  /** Memoised part-number → display-title map built from the index's structure tree. */
-  private partTitles: Map<string, string> | undefined;
+  /**
+   * Memoised part-number → display-title maps, one per title: a title's
+   * structure tree names ITS parts, and a Title 32 part 70 is not Title
+   * 38's part 70.
+   */
+  private partTitles: Map<number, Map<string, string>> = new Map();
 
   constructor(store: Store, maxAgeDays: number, ecfr?: EcfrApi, logger?: Logger) {
     this.store = store;
@@ -463,22 +561,37 @@ export class CFRService {
   }
 
   search(input: SearchInput): SearchResponse {
-    const { query, page, perPage, part, kind, chapter } = validateSearchInput(input);
-    const outcome = this.store.search({ query, page, perPage, part, kind, chapter });
-    const direct = this.directHit(query, { part, kind, chapter });
+    const { query, page, perPage, part, kind, chapter, title } = validateSearchInput(input);
+    // The scope is the SERVICE's decision: an absent title means Title 38
+    // (the wire-compatible default), `all` means every stored title.
+    const scope: TitleScope = title ?? DEFAULT_TITLE;
+    const outcome = this.store.search({ query, page, perPage, part, kind, chapter, title: scope });
+    const citation = parseCitation(stripParagraphSuffix(query));
+    const citedTitle = citation?.title;
+    const scopeNotice =
+      scope !== 'all' && citedTitle !== undefined && citedTitle !== scope
+        ? `The citation names Title ${citedTitle}, outside the Title ${scope} search scope. Pass title=${citedTitle} to search that title.`
+        : null;
+    const pins =
+      citation === null || scopeNotice !== null
+        ? []
+        : this.directHits(query, citation, { part, kind, chapter }, scope);
 
     let hits = outcome.hits.map((hit) => this.presentHit(hit, false));
     let total = outcome.total;
-    if (direct !== null) {
+    if (pins.length > 0) {
       // The pin-adjusted total must be identical on every page: the union of
-      // all pages is what `total` describes, and the pin is part of that
+      // all pages is what `total` describes, and each pin is part of that
       // union whether FTS found it or not.
-      if (!direct.inResults) total += 1;
-      // Later pages drop their natural copy of the pinned section: it was
-      // already shown on page 1, so keeping it would duplicate the hit
-      // across the pagination sequence.
-      hits = hits.filter((hit) => hit.citation !== direct.citation);
-      if (page === 1) hits = [direct, ...hits];
+      total += pins.filter((pin) => !pin.inResults).length;
+      // Later pages drop their natural copy of the pinned provisions: they
+      // were already shown on page 1, so keeping them would duplicate the
+      // hit across the pagination sequence. A pin is identified by its
+      // (title, citation) PAIR: the same citation in two titles is two
+      // provisions, and dropping one of them would hide a title's copy.
+      const pinned = new Set(pins.map((pin) => `${pin.title}:${pin.citation}`));
+      hits = hits.filter((hit) => !pinned.has(`${hit.title}:${hit.citation}`));
+      if (page === 1) hits = [...pins, ...hits];
     }
 
     const status = this.status();
@@ -492,62 +605,77 @@ export class CFRService {
       hits,
       indexIssueDate: status.issueDate,
       indexStale: status.stale,
-      notice: noticeFor(status),
+      notice: [noticeFor(status, scope), scopeNotice].filter(Boolean).join('. ') || null,
       matchedTerms: groundingTerms.matchedTerms,
       unmatchedTerms: groundingTerms.unmatchedTerms,
     };
   }
 
   /**
-   * Pin the exact provision when the query itself is a citation — adjudicators
-   * paste `38 CFR 4.130(a)` constantly, and keyword noise above the exact
-   * section would be a correctness failure. Computed on every page so the
-   * pin-adjusted `total` stays consistent across the pagination sequence;
-   * only page 1 prepends the hit itself. Honors the part/kind/chapter
-   * filters; `total` only counts the pin when FTS did not already return it.
+   * Pin the exact provision(s) when the query itself is a citation —
+   * adjudicators paste `38 CFR 4.130(a)` constantly, and keyword noise above
+   * the exact section would be a correctness failure.
+   *
+   * A titled citation pins only its own title's copy and only if that title
+   * is in scope. An untitled citation pins every copy in scope.
+   *
+   * Computed on every page so the pin-adjusted `total` stays consistent
+   * across the pagination sequence; only page 1 prepends the hits
+   * themselves. Honors the part/kind/chapter filters; `total` only counts a
+   * pin when FTS did not already return it.
    */
-  private directHit(
+  private directHits(
     query: string,
+    normalized: ResolvedCitation,
     filters: {
       readonly part: string | undefined;
       readonly kind: 'section' | 'appendix' | undefined;
       readonly chapter: string | undefined;
     },
-  ): (PresentedHit & { readonly inResults: boolean }) | null {
-    const normalized = normalizeCitation(stripParagraphSuffix(query));
-    if (normalized === null) return null;
-    const row = this.store.getSection(normalized.citation, normalized.kind);
-    if (row === null) return null;
-    if (filters.part !== undefined && row.part !== filters.part) return null;
-    if (filters.kind !== undefined && row.kind !== filters.kind) return null;
-    if (filters.chapter !== undefined && row.chapter !== filters.chapter) return null;
-    // The membership check MUST use the tier the candidate set came from —
-    // the OR tier, the only candidate tier. Asking about the AND tier would
-    // report a pinned citation as "not in the results" when the candidate
-    // set holds it, and the pin would then be counted twice in `total`.
-    const inResults = this.store.hasSearchMatch('or', query, row.citation);
-    const snippet = excerpt(row.text);
-    const hit = this.presentHit(
-      {
-        citation: row.citation,
-        heading: row.heading,
-        part: row.part,
-        path: row.path,
-        snippet,
-        issueDate: row.issueDate,
-        // Fabricated bm25, strictly better than any real score, so array order
-        // and score order agree; `direct: true` is the reliable client signal.
-        score: -1_000_000,
-        matches: visibleMatches(queryTerms(query), {
+    scope: TitleScope,
+  ): (PresentedHit & { readonly inResults: boolean })[] {
+    const pinScope = normalized.title ?? scope;
+    const rows =
+      pinScope === 'all'
+        ? this.store.sectionsForCitation(normalized.citation, normalized.kind)
+        : [this.store.getSection(normalized.citation, normalized.kind, pinScope)].filter(
+            (row): row is SectionRow => row !== null,
+          );
+    const pins: (PresentedHit & { readonly inResults: boolean })[] = [];
+    for (const row of rows) {
+      if (filters.part !== undefined && row.part !== filters.part) continue;
+      if (filters.kind !== undefined && row.kind !== filters.kind) continue;
+      if (filters.chapter !== undefined && row.chapter !== filters.chapter) continue;
+      // The membership check MUST use the tier the candidate set came from —
+      // the OR tier, the only candidate tier. Asking about the AND tier would
+      // report a pinned citation as "not in the results" when the candidate
+      // set holds it, and the pin would then be counted twice in `total`.
+      const inResults = this.store.hasSearchMatch('or', query, row.citation, row.title);
+      const snippet = excerpt(row.text);
+      const hit = this.presentHit(
+        {
+          title: row.title,
           citation: row.citation,
           heading: row.heading,
+          part: row.part,
+          path: row.path,
           snippet,
-        }),
-      },
-      true,
-      inResults,
-    );
-    return { ...hit, inResults };
+          issueDate: row.issueDate,
+          // Fabricated bm25, strictly better than any real score, so array order
+          // and score order agree; `direct: true` is the reliable client signal.
+          score: -1_000_000,
+          matches: visibleMatches(queryTerms(query), {
+            citation: row.citation,
+            heading: row.heading,
+            snippet,
+          }),
+        },
+        true,
+        inResults,
+      );
+      pins.push({ ...hit, inResults });
+    }
+    return pins;
   }
 
   /** Attach display citation, source URL, direct flag, and inResults to a raw hit. */
@@ -557,12 +685,12 @@ export class CFRService {
     const partTitleValue =
       hit.part === null || hit.part === undefined
         ? null
-        : (this.partTitleMap().get(hit.part) ?? null);
+        : (this.partTitleMap(hit.title).get(hit.part) ?? null);
     return {
       ...rest,
-      citationDisplay: displayCitation(kind, hit.citation),
-      sourceUrl: sourceUrlFor(hit.citation, kind),
-      sourceUrlAtIndexDate: datedSourceUrlFor(hit.citation, kind, issueDate),
+      citationDisplay: displayCitation(kind, hit.citation, hit.title),
+      sourceUrl: sourceUrlFor(hit.citation, kind, hit.title),
+      sourceUrlAtIndexDate: datedSourceUrlFor(hit.citation, kind, issueDate, hit.title),
       direct,
       inResults,
       partTitle: partTitleValue,
@@ -571,43 +699,120 @@ export class CFRService {
 
   /**
    * Actionable not-found guidance: a section-shaped citation that missed the
-   * index may be reserved, removed, or simply outside Title 38 — so say that,
-   * link the provision on eCFR, and surface indexed sections that mention it
-   * (neighbors like `4.151a` frequently explain the gap).
+   * index may be reserved, removed, or simply outside the title it was
+   * looked for in — so say that, link the provision on eCFR, and surface
+   * indexed sections that mention it (neighbors like `4.151a` frequently
+   * explain the gap).
+   *
+   * The title it names is the one the read asked for; a read that named
+   * none keeps the Title-38 wording, which is the published guidance for
+   * the mission title.
    */
-  private notFoundMessage(citation: string): string {
+  private notFoundMessage(citation: string, title: number | undefined): string {
     // Phrase, not tokenized: `"4 150"` matches sections that actually
     // reference the citation, while bare tokens (`"4"* AND "150"*`) rank
     // unrelated sections that merely contain both fragments.
     const mentions = this.store
-      .search({ query: `"${citation}"`, page: 1, perPage: 5 })
+      .search({ query: `"${citation}"`, page: 1, perPage: 5, title: title ?? DEFAULT_TITLE })
       .hits.map((hit) => hit.citation)
       .filter((found) => found.toLowerCase() !== citation.toLowerCase());
     const base =
-      `no indexed content for citation ${citation} — it may be reserved, removed, ` +
-      'or outside Title 38 as of the local issue date';
-    const verify = `verify it on eCFR: ${sourceUrlFor(citation, kindForCitation(citation))}`;
+      title === undefined
+        ? `no indexed content for citation ${citation} — it may be reserved, removed, ` +
+          'or outside Title 38 as of the local issue date'
+        : `no indexed content for citation ${citation} in Title ${title} — it may be reserved, ` +
+          `removed, or outside Title ${title} as of the local issue date`;
+    const verify = `verify it on eCFR: ${sourceUrlFor(
+      citation,
+      kindForCitation(citation),
+      title ?? DEFAULT_TITLE,
+    )}`;
     if (mentions.length === 0) return `${base}; ${verify}`;
     return `${base}; ${verify}. Indexed sections that mention it: ${mentions.join(', ')}`;
   }
 
-  /** Fetch one section by citation (`4.125`, `§ 4.125`, `38 CFR 4.125`, …). */
-  getSection(citationInput: string): SectionDetail {
+  /**
+   * The title a read names, parsed by the same rule the search uses.
+   *
+   * `undefined` means the read named no title (see {@link resolveSection}).
+   */
+  private parseTitle(value: number | string | undefined): TitleScope | undefined {
+    const parsed = titleInputSchema.safeParse({ title: value });
+    if (!parsed.success) toServiceError(parsed.error, CITATION_HINTS);
+    return parsed.data.title;
+  }
+
+  /**
+   * The provision a citation names, resolved against the titles the store
+   * holds.
+   *
+   * A read searches exactly one title, defaulting to Title 38. On an untitled
+   * miss, other stored titles can supply hints for a more specific request.
+   *
+   * `all` is refused: a read answers with ONE provision, and "every
+   * stored title" would be a search scope, not an answer.
+   */
+  private resolveSection(
+    citation: string,
+    kind: 'section' | 'appendix',
+    title: TitleScope | undefined,
+  ): SectionRow {
+    if (title === 'all') {
+      throw new ServiceError(
+        'a section read names ONE title — `all` is a search-only scope; ' +
+          'pass the title you want (e.g. `title=32`)',
+        'invalid_input',
+      );
+    }
+    const row = this.store.getSection(citation, kind, title ?? DEFAULT_TITLE);
+    if (row !== null) return row;
+    let message = this.notFoundMessage(citation, title);
+    if (title === undefined) {
+      const titles = new Set(
+        this.store.sectionsForCitation(citation, kind).map((row) => row.title),
+      );
+      for (const otherTitle of titles) {
+        message += `. Title ${otherTitle} holds ${citation}; pass title=${otherTitle}`;
+      }
+    }
+    throw new ServiceError(message, 'not_found');
+  }
+
+  /**
+   * Fetch one section by citation (`4.125`, `§ 4.125`, `38 CFR 4.125`, …).
+   *
+   * The authority is settled by PRECEDENCE: the title the caller names
+   * wins; a citation that names its own title (`32 CFR § 70.1`) settles it
+   * next; and an untitled citation reads within Title 38 only.
+   */
+  getSection(citationInput: string, titleInput?: number | string | undefined): SectionDetail {
     const parsed = citationInputSchema.safeParse(citationInput);
     if (!parsed.success) toServiceError(parsed.error, CITATION_HINTS);
-    const normalized = normalizeCitation(parsed.data);
+    const normalized = parseCitation(parsed.data);
     if (normalized === null) {
       throw new ServiceError(
         `unrecognized citation: ${JSON.stringify(citationInput)} (expected e.g. "4.125" or "38 CFR 4.125")`,
         'invalid_input',
       );
     }
-    const row = this.store.getSection(normalized.citation, normalized.kind);
-    if (row === null) {
-      throw new ServiceError(this.notFoundMessage(normalized.citation), 'not_found');
+    const requested = this.parseTitle(titleInput);
+    if (
+      requested !== undefined &&
+      requested !== 'all' &&
+      normalized.title !== undefined &&
+      requested !== normalized.title
+    ) {
+      throw new ServiceError(
+        `the citation names Title ${normalized.title} but the read asked for Title ${requested} — ` +
+          'name one title',
+        'invalid_input',
+      );
     }
+    const scope = requested === undefined ? normalized.title : requested;
+    const row = this.resolveSection(normalized.citation, normalized.kind, scope);
     const status = this.status();
     return {
+      title: row.title,
       citation: row.citation,
       kind: row.kind,
       heading: row.heading,
@@ -618,20 +823,21 @@ export class CFRService {
       issueDate: row.issueDate,
       markdown: row.markdown,
       text: row.text,
-      sourceUrl: sourceUrlFor(row.citation, row.kind),
-      sourceUrlAtIndexDate: datedSourceUrlFor(row.citation, row.kind, row.issueDate),
+      sourceUrl: sourceUrlFor(row.citation, row.kind, row.title),
+      sourceUrlAtIndexDate: datedSourceUrlFor(row.citation, row.kind, row.issueDate, row.title),
       references: extractReferences(row.text).map((citation) => ({
         citation,
-        available: this.store.hasSection(citation),
+        // Check availability within the provision's title because cross-title edges are out of scope.
+        available: this.store.hasSection(citation, row.title),
       })),
       // Reverse edges keyed by the section's canonical (lowercase) citation —
-      // the exact form extractReferences() stored at rebuild time.
-      citedBy: this.store.citedBy(row.citation),
-      // SCS diagnostics (design doc §3.1): same edge scope as citedBy — the
-      // cited section's canonical (lowercase) citation, Title 38 default.
-      citationSupport: this.store.citationSupport(row.citation),
+      // the exact form extractReferences() stored at rebuild time. The edges
+      // are the SECTION's title's edges: a cross-title edge never exists.
+      citedBy: this.store.citedBy(row.citation, row.title),
+      // Citation support uses the same title-scoped edges as citedBy.
+      citationSupport: this.store.citationSupport(row.citation, row.title),
       indexStale: status.stale,
-      notice: noticeFor(status),
+      notice: noticeFor(status, row.title),
     };
   }
 
@@ -749,27 +955,39 @@ export class CFRService {
     return sections !== expectedSections + expectedAppendices;
   }
 
-  /** Build (once) and return the memoised part-number → display-title map. */
-  private partTitleMap(): Map<string, string> {
-    // An EMPTY map is memoised too: a missing or unreadable structure must
-    // not be re-parsed on every search.
-    if (this.partTitles !== undefined) return this.partTitles;
+  /**
+   * Build (once per title) and return the memoised part-number →
+   * display-title map for ONE title.
+   *
+   * Each title carries its own structure tree (`title.<N>.structure_json`);
+   * the legacy global key is Title 38's, so it is the fallback there. A
+   * Title 32 hit must not be labeled with Title 38's part title: the two
+   * titles' part numbers are different parts.
+   *
+   * An EMPTY map is memoised too: a missing or unreadable structure must
+   * not be re-parsed on every search.
+   */
+  private partTitleMap(title: number): Map<string, string> {
+    const cached = this.partTitles.get(title);
+    if (cached !== undefined) return cached;
     const titles = new Map<string, string>();
     try {
-      const structureJson = this.store.getMeta('structure_json');
+      const structureJson =
+        this.store.getMeta(`title.${title}.structure_json`) ??
+        (title === DEFAULT_TITLE ? this.store.getMeta('structure_json') : null);
       if (structureJson !== null) {
         collectPartTitles(parseStructure(JSON.parse(structureJson)), titles);
       }
     } catch {
       // Unreadable or missing structure: degrade silently to an empty map.
     }
-    this.partTitles = titles;
+    this.partTitles.set(title, titles);
     return titles;
   }
 
   /** Parts present in the index, joined with titles from the structure tree. */
   listParts(): PartSummary[] {
-    const titles = this.partTitleMap();
+    const titles = this.partTitleMap(DEFAULT_TITLE);
     return this.store.listParts().map((row) => ({
       part: row.part,
       title: titles.get(row.part) ?? null,
