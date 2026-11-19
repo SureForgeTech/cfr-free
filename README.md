@@ -59,8 +59,8 @@ keys, no telemetry — one Node process and one SQLite file.
 
 ## Requirements
 
-- Node.js **≥ 22.13** (uses the built-in `node:sqlite`; SQLite ≥ 3.50 with
-  FTS5, bundled with Node 22.13+)
+- Node.js **≥ 22.16** (uses the built-in `node:sqlite` with FTS5; Node 22.16 is
+  the first release whose `node:sqlite` enables it)
 - Network access only for `cfr-free sync`, `cfr-free diff`,
   `cfr-free redline` and `cfr-free historical` (~2–3 MB from ecfr.gov
   per full-title fetch; the two-date views fetch twice); the startup
@@ -179,7 +179,7 @@ npm install github:SureForgeTech/sureforge-cfr
 ### 5. From a source checkout
 
 ```bash
-# requires Node >= 22.13
+# requires Node >= 22.16
 git clone https://github.com/SureForgeTech/sureforge-cfr.git
 cd sureforge-cfr
 npm ci                  # install the pinned dependencies
@@ -240,9 +240,13 @@ CFR_INDEX_PATH=/tmp/cfr-smoke.sqlite node dist/cli.js sync   # ~5 s, then delete
 ### Verifying an index or a snapshot
 
 `cfr-free verify` answers two questions about a local file: is it usable, and
-does the corpus receipt it records still describe its own Title 38 rows? It
-reads only that file — no network, no eCFR fetch — and never creates,
-repairs or rewrites it.
+does the corpus receipt it records still describe its own Title 38 rows?
+Verification runs offline and leaves the main database file and its
+permissions intact. The configured index is read with SQLite's WAL protocol
+while sync or serve is running. SQLite can update shared memory in the
+existing `-shm` file and can create missing `-wal` and `-shm` sidecars if the
+directory is writable. A positional snapshot must be a standalone file
+without journal sidecars and is opened immutably.
 
 ```bash
 cfr-free verify                     # the index at CFR_INDEX_PATH
@@ -520,23 +524,27 @@ The serve root `/` also serves a **read-only web UI** (search + section
 reader with chapter/part browse + a redline view, over the same JSON API, hash-routed) — no auth, loopback bind by
 default like the rest of the surface.
 
+The XML parser escapes inline links, reference links, images, raw HTML and
+angle-bracket autolinks in the Markdown body. Bare URLs are preserved.
+
 ## Configuration
 
 All configuration is environment variables (flags are deliberately avoided so
 MCP client configs stay uniform):
 
-| Variable            | Default                    | Meaning                                                                                           |
-| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------- |
-| `CFR_INDEX_PATH`    | `~/.cfr-free/index.sqlite` | SQLite index location                                                                             |
-| `CFR_TITLES`        | `38`                       | CFR titles to sync (comma-separated, 1–50); each is stored under its own authority                |
-| `CFR_MAX_AGE_DAYS`  | `7`                        | Index older than this is reported stale                                                           |
-| `CFR_AUTO_SYNC`     | `1`                        | Sync at startup when index empty/stale                                                            |
-| `CFR_REFRESH_HOURS` | `0`                        | Hours between background refreshes while serving (0 = off)                                        |
-| `CFR_HOST`          | `127.0.0.1`                | HTTP bind address                                                                                 |
-| `CFR_PORT`          | `8787`                     | HTTP bind port                                                                                    |
-| `CFR_ALLOW_REMOTE`  | unset                      | Set `1` to permit non-loopback binds                                                              |
-| `CFR_ALLOWED_HOSTS` | unset                      | Host names the server answers to besides loopback (a proxy); setting it also guards a remote bind |
-| `CFR_LOG_LEVEL`     | `info`                     | `debug` \| `info` \| `warn` \| `error`                                                            |
+| Variable              | Default                    | Meaning                                                                                           |
+| --------------------- | -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `CFR_INDEX_PATH`      | `~/.cfr-free/index.sqlite` | SQLite index location                                                                             |
+| `CFR_TITLES`          | `38`                       | CFR titles to sync (comma-separated, 1–50); each is stored under its own authority                |
+| `CFR_MAX_AGE_DAYS`    | `7`                        | Index older than this is reported stale                                                           |
+| `CFR_AUTO_SYNC`       | `1`                        | Sync at startup when index empty/stale                                                            |
+| `CFR_REFRESH_HOURS`   | `0`                        | Hours between background refreshes while serving (0 = off)                                        |
+| `CFR_HOST`            | `127.0.0.1`                | HTTP bind address                                                                                 |
+| `CFR_PORT`            | `8787`                     | HTTP bind port                                                                                    |
+| `CFR_ALLOW_REMOTE`    | unset                      | Set `1` to permit non-loopback binds                                                              |
+| `CFR_ALLOWED_HOSTS`   | unset                      | Host names the server answers to besides loopback (a proxy); setting it also guards a remote bind |
+| `CFR_TRUSTED_PROXIES` | unset                      | Comma-separated proxy IPs trusted to forward client addresses for rate limiting                   |
+| `CFR_LOG_LEVEL`       | `info`                     | `debug` \| `info` \| `warn` \| `error`                                                            |
 
 Logs are structured JSON lines on **stderr** only — stdout is reserved for
 MCP's JSON-RPC protocol.

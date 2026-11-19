@@ -11,11 +11,11 @@ import type { Logger } from '../logger.js';
  * snapshot of it, is internally usable and whether the corpus receipt it
  * records still describes its current Title 38 rows.
  *
- * The file is opened through the strict read-only evidence path (no
- * creation, no journal-mode rewrite, no schema adoption, no upgrade): a
- * verification never repairs or alters the file it reads, so it can be run
- * on evidence — the same read-only contract as the offline snapshot
- * comparison (`src/core/snapshot-compare.ts`).
+ * An explicit snapshot uses the immutable evidence path shared with offline
+ * snapshot comparison. The configured index uses a read-only SQLite
+ * connection that includes committed WAL data. SQLite may update the -shm
+ * sidecar or create missing WAL/SHM sidecars. Both modes leave the main
+ * database file and its permissions intact.
  *
  * Exit policy (enforced by the CLI dispatch, `src/cli.ts`): a readable index
  * reports and exits 0, INCLUDING when it records no receipt — the absent
@@ -84,10 +84,7 @@ export function runVerifyCommand(
   }
   let store: Store;
   try {
-    // STRICT, read-only open: the same adoption contract as the offline
-    // snapshot comparison — a verification never repairs or alters the file
-    // it reads.
-    store = Store.open(resolved, { readOnly: true });
+    store = Store.open(resolved, { readOnly: snapshot === undefined ? 'live' : true });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     logger.warn('verification refused the file', { path: resolved, detail });

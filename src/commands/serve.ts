@@ -92,11 +92,13 @@ export async function runServeCommand(
       // loopback, while local tooling must never throttle itself.
       ...(config.allowRemote ? { rateLimit: { capacity: 60, refillPerSec: 10 } } : {}),
       disk: () => diskSnapshot,
+      trustedProxies: config.trustedProxies,
       // A loopback bind is only as private as the browsers on this machine:
       // any web page can aim a name it controls at 127.0.0.1. Insist on a
-      // loopback Host and refuse cross-site requests (see HttpServerOptions).
+      // loopback Host (see HttpServerOptions).
       // A remote bind (the container image) is guarded too once the operator
       // has named its hosts in CFR_ALLOWED_HOSTS: then the names are known.
+      // Guarded binds also return 403 for Sec-Fetch-Site: cross-site.
       ...(isLoopbackHost(config.host) || config.allowedHosts.length > 0
         ? { localOnly: true, allowedHosts: config.allowedHosts }
         : {}),

@@ -1,8 +1,18 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { defaultIndexDirectory } from '../src/config.js';
 import { Store, StoreError, SCHEMA_VERSION } from '../src/core/store.js';
 import { syncIndex } from '../src/core/sync.js';
 import type { EcfrApi } from '../src/core/ecfr.js';
@@ -14,12 +24,107 @@ import {
   openTempStore,
 } from './helpers.js';
 
+const REPOSITORY_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+
 describe('Store', () => {
   it('creates parent directories and reports its path', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-store-'));
+    const directory = path.join(root, 'created-by-cfr');
+    const file = path.join(directory, 'index.sqlite');
+    try {
+      const store = Store.open(file);
+      try {
+        expect(store.path).toBe(file);
+        expect(store.countSections()).toBe(0);
+        if (process.platform !== 'win32') {
+          expect(statSync(directory).mode & 0o777).toBe(0o700);
+          expect(statSync(file).mode & 0o777).toBe(0o600);
+        }
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('tightens an existing default data directory', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'cfr-home-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const directory = defaultIndexDirectory();
+      const file = path.join(directory, 'index.sqlite');
+      Store.open(file).close();
+      chmodSync(directory, 0o755);
+      Store.open(file).close();
+      expect(statSync(directory).mode & 0o777).toBe(0o700);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens an existing index and its WAL files while preserving a custom parent',
+    () => {
+      const temp = openTempStore();
+      try {
+        const file = temp.store.path;
+        const directory = path.dirname(file);
+        chmodSync(directory, 0o755);
+        const files = [file, `${file}-wal`, `${file}-shm`];
+        for (const target of files) chmodSync(target, 0o644);
+        Store.open(file).close();
+        expect(statSync(directory).mode & 0o777).toBe(0o755);
+        expect(files.map((target) => statSync(target).mode & 0o777)).toEqual([0o600, 0o600, 0o600]);
+      } finally {
+        temp.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reads evidence in the default data directory without changing modes or creating sidecars',
+    () => {
+      const home = mkdtempSync(path.join(os.tmpdir(), 'cfr-evidence-'));
+      vi.stubEnv('HOME', home);
+      try {
+        const directory = defaultIndexDirectory();
+        const file = path.join(directory, 'index.sqlite');
+        const writable = Store.open(file);
+        writable.setMeta('evidence', 'preserved');
+        writable.close();
+        chmodSync(directory, 0o755);
+        chmodSync(file, 0o644);
+        const contents = readFileSync(file);
+        const evidence = Store.open(file, { readOnly: true });
+        try {
+          expect(evidence.getMeta('evidence')).toBe('preserved');
+          expect(readdirSync(directory)).toEqual(['index.sqlite']);
+        } finally {
+          evidence.close();
+        }
+        expect(readFileSync(file)).toEqual(contents);
+        expect(statSync(directory).mode & 0o777).toBe(0o755);
+        expect(statSync(file).mode & 0o777).toBe(0o644);
+        const missing = path.join(directory, 'missing', 'index.sqlite');
+        expect(() => Store.open(missing, { readOnly: true })).toThrow(StoreError);
+        expect(readdirSync(directory)).toEqual(['index.sqlite']);
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('refuses live WAL evidence before reading an incomplete checkpoint', () => {
     const temp = openTempStore();
     try {
-      expect(temp.store.path).toContain('index.sqlite');
-      expect(temp.store.countSections()).toBe(FIXTURE_SECTIONS.length);
+      const directory = path.dirname(temp.store.path);
+      const before = readdirSync(directory);
+      expect(before).toContain('index.sqlite-wal');
+      expect(() => Store.open(temp.store.path, { readOnly: true })).toThrow(/standalone/);
+      expect(readdirSync(directory)).toEqual(before);
     } finally {
       temp.cleanup();
     }
@@ -1443,6 +1548,111 @@ describe('Store transaction and integrity edge cases', () => {
       expect(() => Store.open(damaged)).toThrow(/integrity check failed/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('index permissions', () => {
+  it('tightens a symlinked index path on the file it resolves to', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-symlink-'));
+    try {
+      const real = path.join(root, 'real.sqlite');
+      writeFileSync(real, '');
+      chmodSync(real, 0o644);
+      const link = path.join(root, 'link.sqlite');
+      symlinkSync(real, link);
+
+      const store = Store.open(link);
+      store.close();
+
+      // SQLite opened the file the link names, so that file is the one that
+      // must carry the private mode.
+      expect(statSync(real).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('escapes a section that was stored before the escaping rules existed', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-stored-'));
+    try {
+      const file = path.join(root, 'index.sqlite');
+      const store = Store.open(file);
+      // A row written by an older build: the angle-bracket autolink is
+      // still raw in the database.
+      store.replaceAll(
+        [
+          {
+            ...makeSection({ citation: '4.2' }),
+            markdown: 'Write to <1@example.com> today.',
+          },
+        ],
+        '2026-10-09',
+        { issue_date: '2026-10-09', synced_at: '2026-10-09T00:00:00.000Z' },
+      );
+      store.close();
+
+      const reopened = Store.open(file, { readOnly: true });
+      const section = reopened.getSection('4.2', 'section');
+      reopened.close();
+      // The stored value is escaped on the way out, so a section indexed
+      // before the rule existed is served the same way as a new one.
+      expect(section?.markdown).toContain('&lt;1@example.com>');
+      expect(section?.markdown).not.toContain('<1@example.com>');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the declared runtime floor', () => {
+  it('declares a floor whose node:sqlite opens a file: URL', () => {
+    // The immutable evidence path opens the index through a "file:" URL.
+    // Node enables SQLite URI filenames from 22.15; an earlier runtime
+    // treats the URL as a literal filename, so a valid snapshot fails to
+    // open. The floor must therefore be that release, and this test fails
+    // on a runtime below it.
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-floor-'));
+    try {
+      const file = path.join(root, 'index.sqlite');
+      const db = new DatabaseSync(file);
+      db.exec('CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)');
+      db.close();
+
+      const url = new URL(`file://${file}`);
+      url.searchParams.set('mode', 'ro');
+      url.searchParams.set('immutable', '1');
+      const opened = new DatabaseSync(url.href);
+      expect(opened.prepare('SELECT count(*) AS n FROM t').get()).toEqual({ n: 1 });
+      opened.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the declared floor, the spec and this test in step', () => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(REPOSITORY_ROOT, 'package.json'), 'utf8'),
+    ) as { engines?: { node?: string } };
+    expect(manifest.engines?.node).toBe('>=22.16');
+    const spec = readFileSync(path.join(REPOSITORY_ROOT, 'docs/SPEC.md'), 'utf8');
+    expect(spec).toContain('Node ≥ 22.16');
+  });
+
+  it('declares a floor whose node:sqlite has FTS5', () => {
+    // The index schema is an FTS5 table, so a runtime whose node:sqlite
+    // does not enable FTS5 cannot open an index at all. Node enables it
+    // from 22.16; an earlier runtime answers "no such module: fts5".
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('CREATE VIRTUAL TABLE docs USING fts5(content)');
+      db.exec("INSERT INTO docs (content) VALUES ('Example')");
+      const row = db.prepare('SELECT count(*) AS n FROM docs').get() as {
+        n: number;
+      };
+      expect(row.n).toBe(1);
+    } finally {
+      db.close();
     }
   });
 });

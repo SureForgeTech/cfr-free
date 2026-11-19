@@ -193,6 +193,93 @@ describe('parseTitleXml', () => {
     expect(section?.chapter).toBeNull();
     expect(section?.citation).toBe('1.9');
   });
+
+  it('neutralizes an email autolink that starts with a digit', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>Write to &lt;1@example.com&gt; today.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // CommonMark renders "<1@example.com>" as an active mail link, so the
+    // opening angle bracket has to be neutralized for a non-letter prefix
+    // too. The closing one may stay as written.
+    expect(section?.markdown).toContain('&lt;1@example.com>');
+    expect(section?.markdown).not.toContain('<1@example.com>');
+  });
+
+  it('leaves a less-than sign that starts no autolink as written', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>A ratio of a &lt; b stays as written.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    expect(section?.markdown).toContain('a < b');
+  });
+
+  it('extracts a section of bare reference openers without stalling', () => {
+    // Every line opens a reference definition that never closes. An
+    // unbounded lookahead rescans the rest of the section at each opener,
+    // which is quadratic here.
+    const paragraphs = Array.from({ length: 100_000 }, () => '<P>[</P>').join('');
+    const started = Date.now();
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        paragraphs +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    expect(section?.citation).toBe('4.1');
+    // The bound is the CommonMark label limit; the work must stay linear.
+    // An unbounded lookahead needs seconds for this input, the bounded
+    // rule a fraction of one.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('neutralizes an email autolink that starts with a tilde', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>Write to &lt;~team@example.com&gt; today.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // The CommonMark local part allows "~", so it starts an autolink too.
+    expect(section?.markdown).toContain('&lt;~team@example.com>');
+    expect(section?.markdown).not.toContain('<~team@example.com>');
+  });
+
+  it('neutralizes a reference definition whose label holds an escaped bracket', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>[a\\]b]: https://example.com</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // The label ends at the first bracket that is not escaped, so this is a
+    // reference definition and its opener must be neutralized.
+    expect(section?.markdown).toContain('\\[a\\]b]:');
+  });
 });
 
 /**
@@ -338,5 +425,48 @@ describe('image content markers (P1-01)', () => {
     const [section] = parseTitleXml(xml);
     expect(section?.heading).toBe('Title.');
     expect(section?.heading).not.toContain('image content not included');
+  });
+
+  it('escapes literal markdown image syntax in text so downstream clients do not fetch images', () => {
+    const xml =
+      '<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD>' +
+      '<P>See graphic: ![exfiltration](https://evil.example/beacon.png) here.</P></DIV8></ECFR>';
+    const [section] = parseTitleXml(xml);
+    expect(section?.markdown).toContain('!\\[exfiltration]\\(https://evil.example/beacon.png)');
+    expect(section?.markdown).not.toContain('![exfiltration]');
+  });
+
+  it('neutralizes inline links while preserving bracketed text and the plain source', () => {
+    const text = 'See [this [reference]](https://example.org/) and [reserved].';
+    const xml = `<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD><P>${text}</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    expect(section?.text).toBe(text);
+    expect(section?.markdown).toBe(
+      'See [this [reference]]\\(https://example.org/) and [reserved].',
+    );
+  });
+
+  it('neutralizes reference link definitions and preserves bare URLs', () => {
+    const url = 'https://example.org/some(path)?q=value#section';
+    const xml =
+      '<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD>' +
+      `<P>See [this][ref], [ref][], and [ref].</P><P>   [ref]: ${url}</P>` +
+      `<P>Visit ${url} directly.</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    const text = `See [this][ref], [ref][], and [ref].\n\n[ref]: ${url}\n\nVisit ${url} directly.`;
+    expect(section?.text).toBe(text);
+    expect(section?.markdown).toBe(text.replace('\n\n[ref]:', '\n\n\\[ref]:'));
+  });
+
+  it.each([
+    ['&lt;img src="https://evil.example/b.png"&gt;', '<img src="https://evil.example/b.png">'],
+    ['&lt;https://evil.example/x&gt;', '<https://evil.example/x>'],
+    ['&lt;/div&gt;', '</div>'],
+    ['&lt;!-- comment --&gt;', '<!-- comment -->'],
+  ])('neutralizes entity-decoded Markdown markup from %s', (escaped, decoded) => {
+    const xml = `<ECFR><DIV8 N="1.1" TYPE="SECTION"><HEAD>§ 1.1 Title.</HEAD><P>${escaped} and a &lt; b.</P></DIV8></ECFR>`;
+    const [section] = parseTitleXml(xml);
+    expect(section?.text).toBe(`${decoded} and a < b.`);
+    expect(section?.markdown).toBe(`&lt;${decoded.slice(1)} and a < b.`);
   });
 });

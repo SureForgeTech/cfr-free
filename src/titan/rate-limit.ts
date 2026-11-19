@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 /**
  * Per-peer token bucket for the HTTP API when it is deliberately exposed
  * (`CFR_ALLOW_REMOTE=1`). The API ships unauthenticated by design; a coarse
@@ -30,6 +32,45 @@ interface Bucket {
   lastMs: number;
 }
 
+/** Canonicalize one IP for exact proxy matching, including IPv4-mapped IPv6. */
+export function canonicalIp(address: string): string | null {
+  const trimmed = address.trim();
+  const family = isIP(trimmed);
+  if (family === 0) return null;
+  if (family === 4) return trimmed;
+
+  // WHATWG URL canonicalizes IPv6 but does not accept a scope identifier.
+  const zoneStart = trimmed.indexOf('%');
+  const ip = zoneStart === -1 ? trimmed : trimmed.slice(0, zoneStart);
+  const canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+  // The mapped prefix must be followed by exactly two hextets.
+  if (/^::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(canonical)) {
+    // Each mapped hextet is variable-width after URL normalization.
+    const [high = '', low = ''] = canonical.slice(7).split(':');
+    const upper = Number.parseInt(high, 16);
+    const lower = Number.parseInt(low, 16);
+    return [upper >>> 8, upper & 255, lower >>> 8, lower & 255].join('.');
+  }
+  return zoneStart === -1 ? canonical : canonical + trimmed.slice(zoneStart);
+}
+
+/** Group IPv6 peers by /64 so rotating interface identifiers share a bucket. */
+export function normalizePeerAddress(address: string): string {
+  const canonical = canonicalIp(address);
+  if (canonical === null) return address.trim();
+  if (!canonical.includes(':')) return canonical;
+  const [ip = ''] = canonical.split('%', 1);
+  const [left = '', right] = ip.split('::');
+  const prefix = left === '' ? [] : left.split(':');
+  const tail = right ? right.split(':') : [];
+  const expanded = [
+    ...prefix,
+    ...Array<string>(8 - prefix.length - tail.length).fill('0'),
+    ...tail,
+  ];
+  return `${expanded.slice(0, 4).join(':')}::/64`;
+}
+
 export class RateLimiter {
   private readonly capacity: number;
   private readonly refillPerSec: number;
@@ -55,13 +96,14 @@ export class RateLimiter {
    * documents a second, because a diff or a redline pulls two of them.
    */
   consume(peer: string, cost = 1): RateVerdict {
+    const normalized = normalizePeerAddress(peer);
     const nowMs = this.now();
-    const bucket = this.buckets.get(peer) ?? { tokens: this.capacity, lastMs: nowMs };
+    const bucket = this.buckets.get(normalized) ?? { tokens: this.capacity, lastMs: nowMs };
     // Refill proportionally to elapsed time, capped at capacity.
     const elapsedSec = Math.max(0, (nowMs - bucket.lastMs) / 1000);
     bucket.tokens = Math.min(this.capacity, bucket.tokens + elapsedSec * this.refillPerSec);
     bucket.lastMs = nowMs;
-    this.buckets.set(peer, bucket);
+    this.buckets.set(normalized, bucket);
     if (this.buckets.size > this.maxPeers) this.prune();
 
     const wanted = Math.max(1, cost);
@@ -96,18 +138,15 @@ export class RateLimiter {
    * Drop the least-recently-seen peers once the map exceeds `maxPeers` —
    * bounding memory against peer-address floods (IPv6 spaces are huge).
    *
-   * Known trade-offs, deliberate: a client rotating source addresses (a
-   * single IPv6 /64 is enough) mints fresh full-capacity buckets, and
-   * eviction drops a legitimate peer's accumulated spend — inherent to any
-   * per-address limiter and accepted over a global bucket (which one
-   * abusive peer could exhaust for everyone). Eviction sorts at most
-   * `maxPeers` entries and only runs when a *new* peer pushes the map over
-   * the cap; established peers never trigger it.
+   * Evict down to 90% of `maxPeers` (rounded down, with a minimum of one)
+   * to avoid sorting on every new peer under an address flood.
    */
   prune(): void {
     if (this.buckets.size <= this.maxPeers) return;
+    const target = Math.max(1, Math.floor(this.maxPeers * 0.9));
     const entries = [...this.buckets.entries()].sort((a, b) => a[1].lastMs - b[1].lastMs);
-    for (const [key] of entries.slice(0, this.buckets.size - this.maxPeers)) {
+    const toRemove = this.buckets.size - target;
+    for (const [key] of entries.slice(0, toRemove)) {
       this.buckets.delete(key);
     }
   }

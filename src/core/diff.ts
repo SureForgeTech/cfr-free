@@ -68,6 +68,13 @@ export function assertIssueDate(value: string, label: string): string {
       'invalid_input',
     );
   }
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  if (value > todayUtc) {
+    throw new ServiceError(
+      `${label} cannot be later than today in UTC (${todayUtc}), got: ${value}`,
+      'invalid_input',
+    );
+  }
   return value;
 }
 

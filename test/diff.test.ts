@@ -151,6 +151,18 @@ describe('diffIssues', () => {
     expect(requested).toEqual([]);
   });
 
+  it.each([
+    ['2099-01-01', TO_DATE],
+    [FROM_DATE, '2099-12-31'],
+  ])('explains the UTC cutoff for future dates (%s to %s)', async (from, to) => {
+    const requested: string[] = [];
+    const deps = makeDeps(makeDiffFetch(requested));
+    const error = await rejection(diffIssues(deps, from, to));
+    expect(error).toBeInstanceOf(ServiceError);
+    expect(error).toMatchObject({ code: 'invalid_input', message: expect.stringContaining('UTC') });
+    expect(requested).toEqual([]);
+  });
+
   it('accepts 2026-02-28 — the maximum day February can hold in a non-leap year', async () => {
     const requested: string[] = [];
     const deps = makeDeps(makeDiffFetch(requested, { '2026-02-28': FROM_XML, [TO_DATE]: TO_XML }));

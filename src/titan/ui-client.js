@@ -607,6 +607,23 @@
   }
 
   /**
+   * Undo the escaping the connector applies to a provision's Markdown.
+   *
+   * The connector escapes the Markdown constructs that would render as a
+   * link, an image or raw HTML, so that a Markdown renderer shows them as
+   * written. This view is plain text, so it would show the escaped form
+   * literally - "&lt;" instead of "<". The escapes are undone here, and
+   * the DOM is still filled with text and never with markup.
+   */
+  function unescapeMarkdown(text) {
+    return String(text)
+      .replace(/&lt;/g, '<')
+      .replace(/\\\]\(/g, '](')
+      .replace(/!\\\[/g, '![')
+      .replace(/\\\[/g, '[');
+  }
+
+  /**
    * Render a provision's markdown into the DOM.
    *
    * A provision arrives in TWO renderings: `text` (pipe-joined rows with no
@@ -625,9 +642,9 @@
     clear(container);
     // CRLF is one line break, not two: a carriage left at the end of a
     // heading is a character the reader sees.
-    const lines = String(markdown === undefined || markdown === null ? '' : markdown).split(
-      /\r?\n/,
-    );
+    const lines = unescapeMarkdown(
+      String(markdown === undefined || markdown === null ? '' : markdown),
+    ).split(/\r?\n/);
     let index = 0;
     while (index < lines.length) {
       const line = lines[index] ?? '';

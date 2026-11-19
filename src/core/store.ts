@@ -1,6 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
+import { defaultIndexDirectory } from '../config.js';
 import { hashContent } from './changes.js';
 import {
   EXCEPTION_DEMOTION_KEY,
@@ -16,6 +18,7 @@ import {
 } from './query.js';
 import { extractReferences } from './references.js';
 import { DEFAULT_TITLE, type TitleScope } from './titles.js';
+import { escapeMarkdownLinks } from './xml.js';
 import type { SectionKind, RawSection } from './xml.js';
 
 // The title vocabulary lives in a leaf module (`titles.ts`) so the permalink
@@ -310,12 +313,12 @@ export interface StoreOpenOptions {
   /** Override the busy-wait timeout (tests use a short one). */
   readonly busyTimeoutMs?: number;
   /**
-   * Open an existing index without creating directories, changing its journal
-   * mode, creating tables, or upgrading its schema. SQLite's native read-only
-   * open blocks writes and missing-file creation. Only read paths that treat
-   * the file as evidence (comparison, verification) may set this.
+   * True opens a standalone snapshot as immutable evidence and refuses
+   * journal sidecars. 'live' opens the main file read-only and uses SQLite's
+   * WAL protocol, which can update shared memory in the -shm sidecar and
+   * create missing WAL/SHM sidecars if the directory is writable.
    */
-  readonly readOnly?: boolean;
+  readonly readOnly?: boolean | 'live';
   /**
    * Adopt an OLDER schema version (0 < version < SCHEMA_VERSION) instead of
    * failing. Only the sync path may set this: `syncIndex` immediately
@@ -703,7 +706,9 @@ function toSectionRow(row: Record<string, unknown>): SectionRow {
     subjectGroup: nullableString(row['subject_group']),
     path: String(row['path']),
     text: String(row['text']),
-    markdown: String(row['markdown']),
+    // The escaping is idempotent, so applying it here also covers sections
+    // that were indexed before the rule existed.
+    markdown: escapeMarkdownLinks(String(row['markdown'])),
     issueDate: String(row['issue_date']),
   };
 }
@@ -752,12 +757,40 @@ function refuseForeignDatabase(db: DatabaseSync): void {
   }
 }
 
-function prepareDatabaseTarget(filePath: string, readOnly: boolean): string {
-  const directory = path.dirname(filePath);
-  if (!readOnly && directory.length > 0 && directory !== '.') {
-    mkdirSync(directory, { recursive: true });
+function tightenPermissions(target: string, kind: 'file' | 'directory'): void {
+  try {
+    // statSync, not lstatSync: a symlinked index path names the file SQLite
+    // opens, so the mode has to be tightened on the file the link resolves
+    // to. lstatSync would describe the link itself and skip the chmod.
+    const stat = statSync(target);
+    if (kind === 'file' && stat.isFile()) chmodSync(target, 0o600);
+    if (kind === 'directory' && stat.isDirectory()) chmodSync(target, 0o700);
+  } catch {
+    // Sidecars can disappear on close, and some filesystems lack POSIX modes.
   }
-  return filePath;
+}
+
+function ensureDirectoryPermissions(filePath: string): void {
+  const directory = path.dirname(filePath);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const defaultDirectory = defaultIndexDirectory();
+  if (directory === defaultDirectory) tightenPermissions(defaultDirectory, 'directory');
+}
+
+function readOnlyDatabaseTarget(filePath: string, mode: true | 'live'): string {
+  const resolved = realpathSync(filePath);
+  const target = pathToFileURL(resolved);
+  target.searchParams.set('mode', 'ro');
+  // SQLite's ordinary read-only mode can create WAL/SHM files. Immutable
+  // mode avoids those writes but ignores journals, so require a standalone
+  // snapshot before using it.
+  if (mode === true) {
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(resolved + suffix))) {
+      throw new StoreError('index has SQLite journal sidecars — use a standalone cfr-free export');
+    }
+    target.searchParams.set('immutable', '1');
+  }
+  return target.href;
 }
 
 function assertQuickCheck(db: DatabaseSync): void {
@@ -768,11 +801,12 @@ function assertQuickCheck(db: DatabaseSync): void {
 
 function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync {
   const readOnly = options.readOnly ?? false;
-  const sqliteTarget = prepareDatabaseTarget(filePath, readOnly);
+  const onDisk = filePath !== ':memory:';
+  if (!readOnly && onDisk) ensureDirectoryPermissions(filePath);
 
   const db = readOnly
-    ? new DatabaseSync(sqliteTarget, { readOnly: true })
-    : new DatabaseSync(sqliteTarget);
+    ? new DatabaseSync(readOnlyDatabaseTarget(filePath, readOnly), { readOnly: true })
+    : new DatabaseSync(filePath);
   try {
     // The file is an INPUT: `export` exists so an index can be handed to
     // someone else, and `CFR_INDEX_PATH` can name any file. Views and
@@ -781,7 +815,8 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     // before anything reads it.
     db.exec('PRAGMA trusted_schema = OFF');
     refuseForeignDatabase(db);
-    // A read-only evidence open must not rewrite a delete-mode snapshot's
+    if (!readOnly && onDisk) tightenPermissions(filePath, 'file');
+    // A read-only open must not rewrite a delete-mode snapshot's
     // header just to prefer WAL; that mutation belongs to the owner/sync.
     if (!readOnly) db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
@@ -795,12 +830,16 @@ function openDatabase(filePath: string, options: StoreOpenOptions): DatabaseSync
     assertQuickCheck(db);
     if (readOnly) {
       ensureReadOnlySchemaVersion(db);
-      // A read-only evidence open must also hold the OBJECTS a read path
+      // A read-only open must also hold the OBJECTS a read path
       // needs: the version stamp alone does not prove the file is usable.
       assertUsableSchema(db);
     } else {
       db.exec(SCHEMA_SQL);
       ensureSchemaVersion(db, options.allowSchemaUpgrade ?? false);
+      if (onDisk) {
+        tightenPermissions(`${filePath}-wal`, 'file');
+        tightenPermissions(`${filePath}-shm`, 'file');
+      }
     }
     return db;
   } catch (error) {
