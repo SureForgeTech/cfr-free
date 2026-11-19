@@ -154,6 +154,24 @@ describe('the title-scoped search', () => {
     }
   });
 
+  it('pins every title’s copy of an untitled citation under `all`', () => {
+    const temp = openMultiTitleStore();
+    try {
+      const { hits } = serviceOver(temp).search({ query: '70.1', title: 'all' });
+      // The citation names no title, so EVERY title that holds it is pinned,
+      // each labeled with its own authority. The ambiguity rule belongs to
+      // the READ (which answers with one provision), not to a cross-title
+      // search (which answers with a list).
+      const pinned = hits.filter((hit) => hit.direct);
+      expect(pinned.map((hit) => `${hit.title}:${hit.citation}`).sort()).toEqual([
+        '32:70.1',
+        '38:70.1',
+      ]);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it.each([
     { query: '32 CFR 70.1', title: undefined, citedTitle: 32 },
     { query: '38 CFR 70.1', title: 32, citedTitle: 38 },

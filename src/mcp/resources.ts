@@ -6,6 +6,7 @@ import type { Logger } from '../logger.js';
 import { CORPUS_RECEIPT_LIMIT } from '../core/changes.js';
 import { ServiceError } from '../core/errors.js';
 import type { CFRService } from '../core/service.js';
+import { DEFAULT_TITLE } from '../core/titles.js';
 import { clientSafeMessage } from './client-safe.js';
 import { UNTRUSTED_DATA_NOTE } from './posture.js';
 
@@ -116,7 +117,7 @@ export function registerResources(server: McpServer, service: CFRService, logger
     async (uri) => {
       try {
         // This resource requires Title 38 even when its § 3.1 is absent.
-        const section = service.getSection('3.1', 38);
+        const section = service.getSection('3.1', DEFAULT_TITLE);
         // Defense-in-depth: CFRService.getSection throws on a miss today, but
         // a null must never serialize as JSON `null` content — that reads as
         // an indistinguishable-from-success response. ServiceError (not a

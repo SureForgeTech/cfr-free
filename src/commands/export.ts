@@ -6,6 +6,7 @@ import { CommandError, EXIT } from '../exit-codes.js';
 import type { Logger } from '../logger.js';
 import { Store } from '../core/store.js';
 import type { SectionRow } from '../core/store.js';
+import { DEFAULT_TITLE } from '../core/titles.js';
 
 /** Optional export formats; the format-less default is the sqlite snapshot. */
 export type ExportOutputFormat = 'jsonl' | 'md';
@@ -86,7 +87,8 @@ function writeMarkdown(store: Store, target: string): number {
     // The heading names the authority when the row is not Title 38's, so a
     // multi-title export never presents Title 32 provisions under a Title
     // 38 heading.
-    const label = row.title === 38 ? row.citation : `${row.citation} (Title ${row.title})`;
+    const label =
+      row.title === DEFAULT_TITLE ? row.citation : `${row.citation} (Title ${row.title})`;
     chunks.push(`\n## ${label} — ${row.heading}\n${body}\n---\n`);
   }
   writeExclusive(target, chunks.join(''));

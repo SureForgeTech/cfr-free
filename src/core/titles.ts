@@ -8,6 +8,15 @@
  * keeps ONE account of each — the alternative was the literal 38 written in
  * two files, which is the kind of duplication the shared-rules tests exist
  * to prevent.
+ *
+ * The config, the eCFR client, the MCP resources and tool descriptions, the
+ * export and the store's schema import the default title as well, so the
+ * code names the mission title through this one constant. Two places keep
+ * the number itself, and both are contracts rather than a second account:
+ * the Title-38 citation prefix in `src/core/citations.ts` (that reader is
+ * Title 38's by design) and the browser asset
+ * (`src/titan/ui-client.js`), which is served as a standalone file and
+ * cannot import this module.
  */
 
 /**

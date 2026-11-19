@@ -1,6 +1,15 @@
 (function () {
   'use strict';
 
+  /**
+   * Title 38's number.
+   *
+   * This asset is served to the browser as a standalone file, so it cannot
+   * import the service's constant (`src/core/titles.ts`); it carries its own
+   * named copy of the mission title instead.
+   */
+  const TITLE_38 = 38;
+
   function byId(id) {
     return document.getElementById(id);
   }
@@ -769,9 +778,9 @@
     const authority = title + ' CFR';
     let display;
     if (section.kind === 'appendix') {
-      display = title === 38 ? citation : authority + ' ' + citation;
+      display = title === TITLE_38 ? citation : authority + ' ' + citation;
     } else {
-      display = (title === 38 ? '38 C.F.R.' : authority) + ' § ' + citation;
+      display = (title === TITLE_38 ? TITLE_38 + ' C.F.R.' : authority) + ' § ' + citation;
     }
     const lines = [];
     lines.push(display);

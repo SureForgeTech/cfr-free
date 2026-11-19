@@ -2,9 +2,15 @@ import { ZodError, z } from 'zod';
 import type { HttpClient } from './http-client.js';
 import { DEFAULT_MAX_WAITERS, Semaphore } from './semaphore.js';
 import { UpstreamFormatError } from './errors.js';
+import { DEFAULT_TITLE } from './titles.js';
 
-/** Title handled by this service (v1 scope). */
-export const TITLE_38 = 38;
+/**
+ * Title handled by this service (v1 scope).
+ *
+ * The VALUE is the default title (`src/core/titles.ts`), so the client and
+ * the store name the same mission title.
+ */
+export const TITLE_38 = DEFAULT_TITLE;
 /** National Defense — the first additional CFR title the sync supports. */
 export const TITLE_32 = 32;
 

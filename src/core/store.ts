@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS sections (
   id INTEGER PRIMARY KEY,
-  title INTEGER NOT NULL DEFAULT 38,
+  title INTEGER NOT NULL DEFAULT ${DEFAULT_TITLE},
   citation TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('section', 'appendix')),
   heading TEXT NOT NULL,
@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS sections (
 -- design, 2026-11-13).
 CREATE TABLE IF NOT EXISTS section_references (
   citing_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-  citing_title INTEGER NOT NULL DEFAULT 38,
+  citing_title INTEGER NOT NULL DEFAULT ${DEFAULT_TITLE},
   cited_citation TEXT NOT NULL,
   PRIMARY KEY (citing_id, cited_citation)
 ) WITHOUT ROWID;
@@ -603,7 +603,7 @@ function upgradeSchemaShape(db: DatabaseSync): void {
     db.exec(`
       CREATE TABLE sections_v3 (
         id INTEGER PRIMARY KEY,
-        title INTEGER NOT NULL DEFAULT 38,
+        title INTEGER NOT NULL DEFAULT ${DEFAULT_TITLE},
         citation TEXT NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('section', 'appendix')),
         heading TEXT NOT NULL,
@@ -622,7 +622,7 @@ function upgradeSchemaShape(db: DatabaseSync): void {
         id, title, citation, kind, heading, chapter, subchapter, part, subpart,
         subject_group, path, text, markdown, issue_date
       )
-        SELECT id, 38, citation, kind, heading, chapter, subchapter, part,
+        SELECT id, ${DEFAULT_TITLE}, citation, kind, heading, chapter, subchapter, part,
                subpart, subject_group, path, text, markdown, issue_date
         FROM sections;
       DROP TABLE sections;
@@ -639,7 +639,9 @@ function upgradeSchemaShape(db: DatabaseSync): void {
   );
   if (!edgeColumns.has('citing_title')) {
     // v2 file: SCHEMA_SQL's IF NOT EXISTS kept the table at its old shape.
-    db.exec('ALTER TABLE section_references ADD COLUMN citing_title INTEGER NOT NULL DEFAULT 38');
+    db.exec(
+      `ALTER TABLE section_references ADD COLUMN citing_title INTEGER NOT NULL DEFAULT ${DEFAULT_TITLE}`,
+    );
   }
 }
 
