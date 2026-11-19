@@ -611,7 +611,7 @@
    *
    * The connector escapes the Markdown constructs that would render as a
    * link, an image or raw HTML, so that a Markdown renderer shows them as
-   * written. This view is plain text, so it shows the escaped form
+   * written. This view is plain text, so it would show the escaped form
    * literally - "&lt;" instead of "<". The escapes are undone here, and
    * the DOM is still filled with text and never with markup.
    */

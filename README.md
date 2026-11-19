@@ -60,7 +60,7 @@ keys, no telemetry — one Node process and one SQLite file.
 ## Requirements
 
 - Node.js **≥ 22.15** (uses the built-in `node:sqlite`; SQLite ≥ 3.50 with
-  FTS5, bundled with Node 22.15+)
+  FTS5, bundled with Node 22.17+)
 - Network access only for `cfr-free sync`, `cfr-free diff`,
   `cfr-free redline` and `cfr-free historical` (~2–3 MB from ecfr.gov
   per full-title fetch; the two-date views fetch twice); the startup
