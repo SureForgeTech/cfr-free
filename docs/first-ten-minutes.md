@@ -281,8 +281,8 @@ The README’s [exit codes](../README.md#exit-codes) table is the full list.
   measured the install routes separately: a clean global install of the packed
   tarball into a throwaway prefix, the GitHub Release asset route end to end
   in a scratch repository, this repository’s own `v0.2.1` release, a
-  project-local `npm install github:deffenda/cfr-free`, and
-  `npx -y github:deffenda/cfr-free` with MCP over stdio. It also measured
+  project-local `npm install github:SureForgeTech/sureforge-cfr`, and
+  `npx -y github:SureForgeTech/sureforge-cfr` with MCP over stdio. It also measured
   the failing route, `npm install -g github:…`. It did not exercise Docker,
   an install from the npm registry, or an install with no npm cache and no
   network beyond the first fetch.

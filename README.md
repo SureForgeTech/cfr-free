@@ -327,8 +327,8 @@ GitHub Release asset route — the same tarball, fetched from a release URL —
 was created, downloaded and installed end to end **in a scratch
 repository**; it now also runs straight from this repository's own
 releases (`v0.2.1`, verified 2026-10-29, see [Quickstart](#quickstart)). A
-project-local `npm install github:deffenda/cfr-free` was run and its
-binary exercised, and `npx -y github:deffenda/cfr-free` was run, MCP over
+project-local `npm install github:SureForgeTech/sureforge-cfr` was run and its
+binary exercised, and `npx -y github:SureForgeTech/sureforge-cfr` was run, MCP over
 stdio included.
 The route that does **not** work — `npm install -g github:…` — was measured
 too, and the failure is npm's (see [Quickstart](#quickstart)). The sequence
