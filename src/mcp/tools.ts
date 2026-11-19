@@ -314,11 +314,16 @@ const changeSummarySchema = z.object({
 const snapshotChangeSchema = z.object({
   citation: z.string(),
   kind: z.enum(['section', 'appendix']),
-  heading: z.string(),
+  heading: z
+    .string()
+    .describe('the provision’s heading, bounded at 1,000 characters (a cut heading ends with "…")'),
   headingChanged: z
     .boolean()
     .describe('true when the provision was retitled — possibly with an unchanged body'),
-  previousHeading: z.string().nullable(),
+  previousHeading: z
+    .string()
+    .nullable()
+    .describe('the from-side heading when the provision was retitled; bounded like `heading`'),
   chapter: z.string().nullable(),
   part: z.string().nullable(),
   subpart: z.string().nullable(),

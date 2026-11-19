@@ -49,6 +49,10 @@ export const SNAPSHOT_CHANGE_CAP = CHANGE_LIST_CAP;
  * what was added, what was removed and what changed, each within its share. A
  * share that is not spent is not lent to the others, so the bound is the same
  * for every comparison.
+ *
+ * The FIRST entry of a category is always taken, even when it does not fit
+ * (see {@link takeWithinBudget}): a category is never empty, so its count is
+ * never a false zero.
  */
 export const SNAPSHOT_RESPONSE_CHAR_BUDGET = 200_000;
 
@@ -157,10 +161,15 @@ export interface SnapshotComparison {
  *
  * An entry's cost is its JSON size: the same bytes the structured payload
  * carries (the text channel renders the same information, so the wire carries
- * roughly twice this). One entry always fits a share — the per-entry bounds
- * cap an entry at a few kilobytes (the summary text, the heading and the
- * metadata together), a share at tens of kilobytes — so a category that has
- * changes always shows at least one of them.
+ * roughly twice this).
+ *
+ * The FIRST entry of a category is always taken, even when it does not fit:
+ * the corpus bounds a provision's text but not its citation, heading or
+ * hierarchy path, so one pathological entry can be larger than a whole
+ * share. Dropping it would leave the category EMPTY, and an empty category
+ * reports a count of zero for changes that exist — a wrong answer, told as
+ * "0 added". One entry over the budget is a cost worth paying; a false count
+ * is not.
  */
 function takeWithinBudget(
   citations: readonly string[],
@@ -171,7 +180,9 @@ function takeWithinBudget(
   for (const citation of citations) {
     const entry = build(citation);
     const cost = JSON.stringify(entry).length;
-    if (spent + cost > CATEGORY_CHAR_BUDGET) return { entries, cut: true };
+    if (entries.length > 0 && spent + cost > CATEGORY_CHAR_BUDGET) {
+      return { entries, cut: true };
+    }
     spent += cost;
     entries.push(entry);
   }

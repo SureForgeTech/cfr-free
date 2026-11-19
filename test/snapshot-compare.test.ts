@@ -330,8 +330,8 @@ describe('compareSnapshots', () => {
       const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
       expect(result.added.length).toBeLessThan(count);
       expect(result.truncated).toBe(true);
-      // The changed list spent a few characters of its own share and kept its
-      // entry: a shared pool would have starved it.
+      // The changed list spent a few characters of its OWN share and kept its
+      // entry: a shared pool would spend the pool on the added list.
       expect(result.changed.map((change) => change.citation)).toEqual(['4.1']);
     } finally {
       fixture.cleanup();
@@ -357,6 +357,36 @@ describe('compareSnapshots', () => {
       expect(result.added).toHaveLength(1);
       expect(result.added[0]?.heading.length).toBeLessThanOrEqual(1_001);
       expect(result.added[0]?.heading.endsWith('…')).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never leaves a category empty, not even for a pathological entry', () => {
+    // The corpus bounds a provision's TEXT, not its citation or hierarchy
+    // path: an entry that carries a megabyte-long one is larger than a whole
+    // category share. It is still shown — an empty category reports a count
+    // of zero for changes that exist.
+    const fixture = snapshotDir();
+    try {
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(
+        to,
+        [
+          makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' }),
+          makeSection({ citation: `4.${'x'.repeat(80_000)}`, text: 'Body.' }),
+        ],
+        TO_DATE,
+      );
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added).toHaveLength(1);
+      expect(result.truncated).toBe(false);
     } finally {
       fixture.cleanup();
     }
