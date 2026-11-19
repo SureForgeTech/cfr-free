@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { Logger } from '../logger.js';
 import { CHANGE_LIST_CAP, diffHashes } from './changes.js';
@@ -49,7 +49,7 @@ const SUMMARY_BLOCK_CHARS = 1_000;
 
 /** One side of the comparison: the file and the issue date it records. */
 export interface SnapshotSide {
-  /** The snapshot file, resolved against the working directory. */
+  /** The snapshot file, as the caller named it (never the resolved path). */
   readonly path: string;
   /** The eCFR issue date recorded in the snapshot's meta (its revision stamp). */
   readonly issueDate: string;
@@ -241,41 +241,66 @@ function changedChange(citation: string, from: SideContext, to: SideContext): Sn
   };
 }
 
-/** Resolve and preflight one snapshot argument: it must exist and be openable. */
-function openSnapshot(resolved: string, label: string): Store {
+/**
+ * Open one snapshot for reading, refusing anything that is not a regular file.
+ *
+ * A snapshot is a FILE the operator stored with `cfr-free export`. Anything
+ * else — a directory, a device, a FIFO — is refused BEFORE SQLite sees it:
+ * opening a FIFO blocks the synchronous open forever, so one tool call would
+ * freeze the whole stdio server.
+ *
+ * Every failure here is CLIENT-SAFE (SPEC §7): the message names the side and
+ * what to do, never the server's path and never raw SQLite text. The detail
+ * goes to the server log.
+ */
+function openSnapshot(resolved: string, label: string, logger: Logger): Store {
   if (!existsSync(resolved)) {
     throw new ServiceError(
-      `no snapshot at ${resolved} — store one first with \`cfr-free export <path>\``,
+      `the ${label} snapshot does not exist — store one first with \`cfr-free export <path>\``,
       'invalid_input',
     );
   }
   try {
+    if (!statSync(resolved).isFile()) {
+      throw new ServiceError(
+        `the ${label} snapshot is not a regular file — a snapshot must be a cfr-free index file`,
+        'invalid_input',
+      );
+    }
     // STRICT, read-only open (no creation, journal-mode rewrite, schema
     // creation, or upgrade), same adoption contract as export: a comparison
     // never repairs or alters the files it reads.
     return Store.open(resolved, { readOnly: true });
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // The guard's own refusal is guidance already; everything else (the file
+    // vanished, it cannot be inspected, SQLite rejected it) keeps its raw
+    // text — and the path that text names — in the server log.
+    if (error instanceof ServiceError) throw error;
+    logger.error('snapshot could not be opened', {
+      side: label,
+      message: error instanceof Error ? error.message : String(error),
+    });
     throw new ServiceError(
-      `${label} snapshot: cannot open ${resolved}: ${detail}`,
+      `the ${label} snapshot could not be opened — it must be a cfr-free index file ` +
+        '(store one with `cfr-free export <path>`)',
       'invalid_input',
     );
   }
 }
 
 /** The recorded issue date of a snapshot, rejecting files that record none. */
-function snapshotIssueDate(store: Store, filePath: string): string {
+function snapshotIssueDate(store: Store, label: string): string {
   // Per-title key first (multi-title indexes), the legacy key as fallback
   // for snapshots stored before it existed.
   const issueDate =
     store.getMeta(`title.${DEFAULT_TITLE}.issue_date`) ?? store.getMeta('issue_date');
   if (issueDate === null) {
     throw new ServiceError(
-      `snapshot at ${filePath} records no issue date — it is not a synced cfr-free index`,
+      `the ${label} snapshot records no issue date — it is not a synced cfr-free index`,
       'invalid_input',
     );
   }
-  return assertIssueDate(issueDate, `snapshot issue date at ${filePath}`);
+  return assertIssueDate(issueDate, `the ${label} snapshot's recorded issue date`);
 }
 
 /**
@@ -284,8 +309,10 @@ function snapshotIssueDate(store: Store, filePath: string): string {
  * read-only (strict schema) and nothing is fetched or written.
  *
  * @throws {ServiceError} (`invalid_input`) when a path is missing, names the
- *   same file on both sides, names a file that is not a cfr-free snapshot, or
- *   names a snapshot that records no issue date.
+ *   same file on both sides, names something that is not a regular file, names
+ *   a file that is not a cfr-free snapshot, or names a snapshot that records
+ *   no issue date. Every message names the side and what to do — never the
+ *   server's path, never raw SQLite text (SPEC §7).
  */
 export function compareSnapshots(
   deps: { readonly logger: Logger },
@@ -297,17 +324,17 @@ export function compareSnapshots(
   const toResolved = path.resolve(toPath);
   if (fromResolved === toResolved) {
     throw new ServiceError(
-      `from and to snapshots are the same file (${fromResolved}) — pass two different snapshots`,
+      'from and to snapshots are the same file — pass two different snapshots',
       'invalid_input',
     );
   }
-  const fromStore = openSnapshot(fromResolved, 'from');
+  const fromStore = openSnapshot(fromResolved, 'from', deps.logger);
   try {
-    const toStore = openSnapshot(toResolved, 'to');
+    const toStore = openSnapshot(toResolved, 'to', deps.logger);
     try {
       const part = options.part ?? null;
-      const fromIssueDate = snapshotIssueDate(fromStore, fromStore.path);
-      const toIssueDate = snapshotIssueDate(toStore, toStore.path);
+      const fromIssueDate = snapshotIssueDate(fromStore, 'from');
+      const toIssueDate = snapshotIssueDate(toStore, 'to');
       if (fromIssueDate > toIssueDate) {
         throw new ServiceError(
           `from snapshot records ${fromIssueDate}, after the to snapshot's ${toIssueDate} — pass the earlier stored snapshot as from_snapshot`,
@@ -339,8 +366,11 @@ export function compareSnapshots(
         diff.added.length > SNAPSHOT_CHANGE_CAP ||
         diff.removed.length > SNAPSHOT_CHANGE_CAP;
       const result: SnapshotComparison = {
-        from: { path: fromStore.path, issueDate: fromIssueDate },
-        to: { path: toStore.path, issueDate: toIssueDate },
+        // The paths are the ones the CALLER named, not the resolved ones:
+        // a response that repeats the server's absolute paths discloses the
+        // server's directory layout to a client that never asked for it.
+        from: { path: fromPath, issueDate: fromIssueDate },
+        to: { path: toPath, issueDate: toIssueDate },
         part,
         added: diff.added
           .slice(0, SNAPSHOT_CHANGE_CAP)

@@ -869,8 +869,10 @@ describe('MCP compare_snapshots tool', () => {
         arguments: { from_snapshot: 'missing.sqlite', to_snapshot: 'also-missing.sqlite' },
       })) as ToolCallResult;
       expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('Error: no snapshot at ');
+      expect(result.content[0]?.text).toContain('Error: the from snapshot does not exist');
       expect(result.content[0]?.text).toContain('cfr-free export');
+      // The client is told what to do; it is not handed the server's paths.
+      expect(result.content[0]?.text).not.toContain('missing.sqlite');
       expect(result.structuredContent).toBeUndefined();
     } finally {
       await client.close();
@@ -1500,7 +1502,7 @@ describe('MCP surface contracts', () => {
         [
           'compare_snapshots',
           { from_snapshot: 'from.sqlite', to_snapshot: 'to.sqlite' },
-          'no snapshot at',
+          'the from snapshot does not exist',
         ],
         ['get_section_at', { at_date: '2024-03-10', citation: '4.125' }, 'internal server error'],
         [
