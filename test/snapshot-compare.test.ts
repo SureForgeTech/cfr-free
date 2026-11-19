@@ -6,7 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { ServiceError } from '../src/core/errors.js';
-import { compareSnapshots } from '../src/core/snapshot-compare.js';
+import { compareSnapshots, SNAPSHOT_RESPONSE_CHAR_BUDGET } from '../src/core/snapshot-compare.js';
 import { Store } from '../src/core/store.js';
 import type { RawSection } from '../src/core/xml.js';
 import { createTestLogger, makeSection } from './helpers.js';
@@ -252,6 +252,141 @@ describe('compareSnapshots', () => {
       expect(result.removed).toHaveLength(100);
       expect(result.added).toHaveLength(100);
       expect(result.truncated).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('bounds the whole response at one character budget', () => {
+    const fixture = snapshotDir();
+    try {
+      // Provisions whose text differs on every line, with long lines: each
+      // summary then carries the bounded hunks at their full length, so the
+      // entries are big enough that the budget — not the entry cap — is what
+      // cuts the list.
+      const count = 40;
+      const lines = Array.from(
+        { length: 6 },
+        (_, i) => `Line ${i} of the provision. ${'x'.repeat(900)}`,
+      );
+      const changedFrom = Array.from({ length: count }, (_, i) =>
+        makeSection({ citation: `4.c${String(i)}`, text: lines.join('\n') }),
+      );
+      const changedTo = changedFrom.map((section, i) => ({
+        ...section,
+        text: [...lines]
+          .reverse()
+          .map((line) => `${line} (${i})`)
+          .join('\n'),
+      }));
+      writeSnapshot(fromPath(fixture.dir), changedFrom, FROM_DATE);
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(to, changedTo, TO_DATE);
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      const cost = [...result.added, ...result.removed, ...result.changed].reduce(
+        (sum, entry) => sum + JSON.stringify(entry).length,
+        0,
+      );
+      expect(cost).toBeLessThanOrEqual(SNAPSHOT_RESPONSE_CHAR_BUDGET);
+      expect(result.truncated).toBe(true);
+      // The budget cuts the list, not the whole category: the changes that
+      // fit are shown, and the rest are reported as cut.
+      expect(result.changed.length).toBeGreaterThan(0);
+      expect(result.changed.length).toBeLessThan(count);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('gives every category its own share of the budget', () => {
+    const fixture = snapshotDir();
+    try {
+      // A big ADDED list beside a small CHANGED list: the shares are equal
+      // and not lent, so the changed list is complete even though the added
+      // list is cut.
+      const lines = Array.from(
+        { length: 6 },
+        (_, i) => `Line ${i} of the provision. ${'x'.repeat(900)}`,
+      );
+      const count = 40;
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.1', heading: 'Small change.', text: 'Old body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(
+        to,
+        [
+          makeSection({ citation: '4.1', heading: 'Small change.', text: 'New body.' }),
+          ...Array.from({ length: count }, (_, i) =>
+            makeSection({ citation: `4.a${String(i)}`, text: lines.join('\n') }),
+          ),
+        ],
+        TO_DATE,
+      );
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added.length).toBeLessThan(count);
+      expect(result.truncated).toBe(true);
+      // The changed list spent a few characters of its OWN share and kept its
+      // entry: a shared pool would spend the pool on the added list.
+      expect(result.changed.map((change) => change.citation)).toEqual(['4.1']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('bounds an entry that carries an unbounded heading', () => {
+    // The corpus bounds a provision's TEXT, not its heading. An entry that
+    // carried a megabyte-long heading could not fit the budget at all, and
+    // the category would come back empty — so the heading is bounded too.
+    const fixture = snapshotDir();
+    try {
+      const heading = `Heading ${'x'.repeat(80_000)}`;
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(to, [makeSection({ citation: '4.1', heading, text: 'Body.' })], TO_DATE);
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added).toHaveLength(1);
+      expect(result.added[0]?.heading.length).toBeLessThanOrEqual(1_001);
+      expect(result.added[0]?.heading.endsWith('…')).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never leaves a category empty, not even for a pathological entry', () => {
+    // The corpus bounds a provision's TEXT, not its citation or hierarchy
+    // path: an entry that carries a megabyte-long one is larger than a whole
+    // category share. It is still shown — an empty category reports a count
+    // of zero for changes that exist.
+    const fixture = snapshotDir();
+    try {
+      writeSnapshot(
+        fromPath(fixture.dir),
+        [makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' })],
+        FROM_DATE,
+      );
+      const to = path.join(fixture.dir, 'to.sqlite');
+      writeSnapshot(
+        to,
+        [
+          makeSection({ citation: '4.9', heading: 'Unrelated.', text: 'Body.' }),
+          makeSection({ citation: `4.${'x'.repeat(80_000)}`, text: 'Body.' }),
+        ],
+        TO_DATE,
+      );
+
+      const result = compareSnapshots({ logger: createTestLogger() }, fromPath(fixture.dir), to);
+      expect(result.added).toHaveLength(1);
+      expect(result.truncated).toBe(false);
     } finally {
       fixture.cleanup();
     }

@@ -2,6 +2,7 @@ import type { Logger } from '../logger.js';
 import {
   compareSnapshots,
   SNAPSHOT_CHANGE_CAP,
+  SNAPSHOT_RESPONSE_CHAR_BUDGET,
   type ChangeSummary,
   type SnapshotChange,
   type SnapshotComparison,
@@ -90,7 +91,10 @@ export function formatSnapshotComparison(comparison: SnapshotComparison): string
   ];
   if (comparison.part !== null) lines.push(`part: ${comparison.part}`);
   if (comparison.truncated) {
-    lines.push(`one or more category lists were cut at the ${SNAPSHOT_CHANGE_CAP}-entry cap`);
+    lines.push(
+      `one or more category lists were cut (at the ${SNAPSHOT_CHANGE_CAP}-entry cap or the ` +
+        `${SNAPSHOT_RESPONSE_CHAR_BUDGET}-character response budget)`,
+    );
   }
   for (const [label, changes] of [
     ['changed', comparison.changed],

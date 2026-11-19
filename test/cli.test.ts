@@ -524,7 +524,9 @@ describe('main', () => {
     const printed = formatSnapshotComparison(comparison);
     expect(printed).toContain('part: 4');
     expect(printed).toContain('0 changed, at least 1 added, at least 1 removed');
-    expect(printed).toContain('one or more category lists were cut at the 100-entry cap');
+    expect(printed).toContain(
+      'one or more category lists were cut (at the 100-entry cap or the 200000-character response budget)',
+    );
     expect(printed).toContain('from: (absent)');
     expect(printed).toContain('image content: true');
     expect(printed).toContain('summary (truncated):');

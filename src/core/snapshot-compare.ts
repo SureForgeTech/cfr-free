@@ -35,6 +35,31 @@ import { IMAGE_MARKER_PREFIX } from './xml.js';
 /** Entries listed per category on the wire; counts beyond the cap set `truncated`. */
 export const SNAPSHOT_CHANGE_CAP = CHANGE_LIST_CAP;
 
+/**
+ * One character budget over the whole comparison response.
+ *
+ * The per-list cap ({@link SNAPSHOT_CHANGE_CAP}) and the per-entry text bounds
+ * keep any ONE entry small; nothing bounded the RESPONSE. Three lists of 100
+ * entries, each carrying a bounded summary, was around a megabyte of
+ * structured payload — and about twice that on the wire, because the text
+ * channel renders the same information again.
+ *
+ * The budget is split into three equal shares, one per category, so every
+ * category is represented: a comparison of two wholesale rebuilds still shows
+ * what was added, what was removed and what changed, each within its share. A
+ * share that is not spent is not lent to the others, so the bound is the same
+ * for every comparison.
+ *
+ * The FIRST entry of a category is always taken, even when it does not fit
+ * (see {@link takeWithinBudget}): a category is never empty, so its count is
+ * never a false zero. The response can therefore exceed the budget by up to
+ * one such entry per category — three in all.
+ */
+export const SNAPSHOT_RESPONSE_CHAR_BUDGET = 200_000;
+
+/** One category's share of {@link SNAPSHOT_RESPONSE_CHAR_BUDGET}. */
+const CATEGORY_CHAR_BUDGET = Math.floor(SNAPSHOT_RESPONSE_CHAR_BUDGET / 3);
+
 /** Changed lines shown in one entry's summary; more set the summary's `truncated` flag. */
 export const SUMMARY_HUNK_CAP = 10;
 
@@ -46,6 +71,22 @@ const SUMMARY_TOTAL_CHARS = 2_500;
 
 /** Per-side character bound of a coarse summary block (a provision over the line LCS cap). */
 const SUMMARY_BLOCK_CHARS = 1_000;
+
+/**
+ * Per-entry bound on a heading.
+ *
+ * The corpus bounds a provision's TEXT but not its HEADING, so a heading can
+ * be as long as a section's text. The comparison is a summary surface: a
+ * heading is a title, and a heading bound keeps the entry a summary can
+ * carry. (An entry can still exceed a category share — the corpus does not
+ * bound a citation or a hierarchy path either.)
+ */
+const HEADING_CHARS = 1_000;
+
+/** Clip a heading at the bound; a cut heading is marked with an ellipsis. */
+function clipHeading(heading: string): string {
+  return heading.length <= HEADING_CHARS ? heading : `${heading.slice(0, HEADING_CHARS)}…`;
+}
 
 /** One side of the comparison: the file and the issue date it records. */
 export interface SnapshotSide {
@@ -108,8 +149,45 @@ export interface SnapshotComparison {
   readonly added: readonly SnapshotChange[];
   readonly removed: readonly SnapshotChange[];
   readonly changed: readonly SnapshotChange[];
-  /** True when any category list was cut at {@link SNAPSHOT_CHANGE_CAP}. */
+  /**
+   * True when any category list was cut — at the entry cap
+   * ({@link SNAPSHOT_CHANGE_CAP}) or at the response budget
+   * ({@link SNAPSHOT_RESPONSE_CHAR_BUDGET}).
+   */
   readonly truncated: boolean;
+}
+
+/**
+ * Take entries while the category's character budget lasts.
+ *
+ * An entry's cost is its JSON size: the same bytes the structured payload
+ * carries (the text channel renders the same information, so the wire carries
+ * roughly twice this).
+ *
+ * The FIRST entry of a category is always taken, even when it does not fit:
+ * the corpus bounds a provision's text but not its citation, heading or
+ * hierarchy path, so one pathological entry can be larger than a whole
+ * share. Dropping it would leave the category EMPTY, and an empty category
+ * reports a count of zero for changes that exist — a wrong answer, told as
+ * "0 added". One entry over the budget is a cost worth paying; a false count
+ * is not.
+ */
+function takeWithinBudget(
+  citations: readonly string[],
+  build: (citation: string) => SnapshotChange,
+): { readonly entries: SnapshotChange[]; readonly cut: boolean } {
+  const entries: SnapshotChange[] = [];
+  let spent = 0;
+  for (const citation of citations) {
+    const entry = build(citation);
+    const cost = JSON.stringify(entry).length;
+    if (entries.length > 0 && spent + cost > CATEGORY_CHAR_BUDGET) {
+      return { entries, cut: true };
+    }
+    spent += cost;
+    entries.push(entry);
+  }
+  return { entries, cut: false };
 }
 
 /** Cut a coarse summary block at the character bound, on a nearby line boundary. */
@@ -195,7 +273,7 @@ function presenceChange(
   return {
     citation,
     kind: present.kind,
-    heading: present.heading,
+    heading: clipHeading(present.heading),
     headingChanged: false,
     previousHeading: null,
     chapter: present.chapter,
@@ -224,9 +302,9 @@ function changedChange(citation: string, from: SideContext, to: SideContext): Sn
   return {
     citation,
     kind: to.row.kind,
-    heading: to.row.heading,
+    heading: clipHeading(to.row.heading),
     headingChanged,
-    previousHeading: headingChanged ? from.row.heading : null,
+    previousHeading: headingChanged ? clipHeading(from.row.heading) : null,
     chapter: to.row.chapter,
     part: to.row.part,
     subpart: to.row.subpart,
@@ -389,10 +467,30 @@ export function compareSnapshots(
         row: toStore.getProvision(citation),
       });
 
-      const truncated =
+      const capCut =
         diff.changed.length > SNAPSHOT_CHANGE_CAP ||
         diff.added.length > SNAPSHOT_CHANGE_CAP ||
         diff.removed.length > SNAPSHOT_CHANGE_CAP;
+      const added = takeWithinBudget(diff.added.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        presenceChange(
+          citation,
+          { issueDate: fromIssueDate, row: null },
+          toSide(citation),
+          'added',
+        ),
+      );
+      const removed = takeWithinBudget(diff.removed.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        presenceChange(
+          citation,
+          fromSide(citation),
+          { issueDate: toIssueDate, row: null },
+          'removed',
+        ),
+      );
+      const changed = takeWithinBudget(diff.changed.slice(0, SNAPSHOT_CHANGE_CAP), (citation) =>
+        changedChange(citation, fromSide(citation), toSide(citation)),
+      );
+      const budgetCut = added.cut || removed.cut || changed.cut;
       const result: SnapshotComparison = {
         // The paths are the ones the CALLER named, not the resolved ones:
         // a response that repeats the server's absolute paths discloses the
@@ -400,36 +498,16 @@ export function compareSnapshots(
         from: { path: fromPath, issueDate: fromIssueDate },
         to: { path: toPath, issueDate: toIssueDate },
         part,
-        added: diff.added
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) =>
-            presenceChange(
-              citation,
-              { issueDate: fromIssueDate, row: null },
-              toSide(citation),
-              'added',
-            ),
-          ),
-        removed: diff.removed
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) =>
-            presenceChange(
-              citation,
-              fromSide(citation),
-              { issueDate: toIssueDate, row: null },
-              'removed',
-            ),
-          ),
-        changed: diff.changed
-          .slice(0, SNAPSHOT_CHANGE_CAP)
-          .map((citation) => changedChange(citation, fromSide(citation), toSide(citation))),
-        truncated,
+        added: added.entries,
+        removed: removed.entries,
+        changed: changed.entries,
+        truncated: capCut || budgetCut,
       };
       deps.logger.info('snapshot comparison computed', {
         changed: diff.changed.length,
         added: diff.added.length,
         removed: diff.removed.length,
-        truncated,
+        truncated: result.truncated,
       });
       return result;
     } finally {
