@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +17,7 @@ import {
   type QueryTerm,
 } from './query.js';
 import { extractReferences } from './references.js';
+import { escapeMarkdownLinks } from './xml.js';
 import type { SectionKind, RawSection } from './xml.js';
 
 /**
@@ -671,7 +672,9 @@ function toSectionRow(row: Record<string, unknown>): SectionRow {
     subjectGroup: nullableString(row['subject_group']),
     path: String(row['path']),
     text: String(row['text']),
-    markdown: String(row['markdown']),
+    // The escaping is idempotent, so applying it here also covers sections
+    // that were indexed before the rule existed.
+    markdown: escapeMarkdownLinks(String(row['markdown'])),
     issueDate: String(row['issue_date']),
   };
 }
@@ -722,7 +725,10 @@ function refuseForeignDatabase(db: DatabaseSync): void {
 
 function tightenPermissions(target: string, kind: 'file' | 'directory'): void {
   try {
-    const stat = lstatSync(target);
+    // statSync, not lstatSync: a symlinked index path names the file SQLite
+    // opens, so the mode has to be tightened on the file the link resolves
+    // to. lstatSync would describe the link itself and skip the chmod.
+    const stat = statSync(target);
     if (kind === 'file' && stat.isFile()) chmodSync(target, 0o600);
     if (kind === 'directory' && stat.isDirectory()) chmodSync(target, 0o700);
   } catch {

@@ -193,6 +193,61 @@ describe('parseTitleXml', () => {
     expect(section?.chapter).toBeNull();
     expect(section?.citation).toBe('1.9');
   });
+
+  it('neutralizes an email autolink that starts with a digit', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>Write to &lt;1@example.com&gt; today.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    // CommonMark renders "<1@example.com>" as an active mail link, so the
+    // opening angle bracket has to be neutralized for a non-letter prefix
+    // too. The closing one may stay as written.
+    expect(section?.markdown).toContain('&lt;1@example.com>');
+    expect(section?.markdown).not.toContain('<1@example.com>');
+  });
+
+  it('leaves a less-than sign that starts no autolink as written', () => {
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        `<P>A ratio of a &lt; b stays as written.</P>` +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    expect(section?.markdown).toContain('a < b');
+  });
+
+  it('extracts a section of bare reference openers without stalling', () => {
+    // Every line opens a reference definition that never closes. An
+    // unbounded lookahead rescans the rest of the section at each opener,
+    // which is quadratic here.
+    const paragraphs = Array.from({ length: 100_000 }, () => '<P>[</P>').join('');
+    const started = Date.now();
+    const [section] = parseTitleXml(
+      `<ECFR><DIV1 N="38" TYPE="TITLE"><HEAD>Title 38</HEAD>` +
+        `<DIV3 N="I" TYPE="CHAPTER"><HEAD>Chapter I</HEAD>` +
+        `<DIV5 N="4" TYPE="PART"><HEAD>Part 4</HEAD>` +
+        `<DIV6 N="B" TYPE="SUBPART"><HEAD>Subpart B</HEAD>` +
+        `<DIV7 N="1" TYPE="SUBJGRP"><HEAD>Subject</HEAD>` +
+        `<DIV8 N="4.1" TYPE="SECTION"><HEAD>Sec 4.1</HEAD>` +
+        paragraphs +
+        `</DIV8></DIV7></DIV6></DIV5></DIV3></DIV1></ECFR>`,
+    );
+    expect(section?.citation).toBe('4.1');
+    // The bound is the CommonMark label limit; the work must stay linear.
+    // An unbounded lookahead needs seconds for this input, the bounded
+    // rule a fraction of one.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
 });
 
 /**

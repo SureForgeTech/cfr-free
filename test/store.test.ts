@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -22,6 +23,8 @@ import {
   makeSection,
   openTempStore,
 } from './helpers.js';
+
+const REPOSITORY_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 describe('Store', () => {
   it('creates parent directories and reports its path', () => {
@@ -1546,5 +1549,93 @@ describe('Store transaction and integrity edge cases', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('index permissions', () => {
+  it('tightens a symlinked index path on the file it resolves to', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-symlink-'));
+    try {
+      const real = path.join(root, 'real.sqlite');
+      writeFileSync(real, '');
+      chmodSync(real, 0o644);
+      const link = path.join(root, 'link.sqlite');
+      symlinkSync(real, link);
+
+      const store = Store.open(link);
+      store.close();
+
+      // SQLite opened the file the link names, so that file is the one that
+      // must carry the private mode.
+      expect(statSync(real).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('escapes a section that was stored before the escaping rules existed', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-stored-'));
+    try {
+      const file = path.join(root, 'index.sqlite');
+      const store = Store.open(file);
+      // A row written by an older build: the angle-bracket autolink is
+      // still raw in the database.
+      store.replaceAll(
+        [
+          {
+            ...makeSection({ citation: '4.2' }),
+            markdown: 'Write to <1@example.com> today.',
+          },
+        ],
+        '2026-10-09',
+        { issue_date: '2026-10-09', synced_at: '2026-10-09T00:00:00.000Z' },
+      );
+      store.close();
+
+      const reopened = Store.open(file, { readOnly: true });
+      const section = reopened.getSection('4.2', 'section');
+      reopened.close();
+      // The stored value is escaped on the way out, so a section indexed
+      // before the rule existed is served the same way as a new one.
+      expect(section?.markdown).toContain('&lt;1@example.com>');
+      expect(section?.markdown).not.toContain('<1@example.com>');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the declared runtime floor', () => {
+  it('declares a floor whose node:sqlite opens a file: URL', () => {
+    // The immutable evidence path opens the index through a "file:" URL.
+    // Node enables SQLite URI filenames from 22.15; an earlier runtime
+    // treats the URL as a literal filename, so a valid snapshot fails to
+    // open. The floor must therefore be that release, and this test fails
+    // on a runtime below it.
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cfr-free-floor-'));
+    try {
+      const file = path.join(root, 'index.sqlite');
+      const db = new DatabaseSync(file);
+      db.exec('CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)');
+      db.close();
+
+      const url = new URL(`file://${file}`);
+      url.searchParams.set('mode', 'ro');
+      url.searchParams.set('immutable', '1');
+      const opened = new DatabaseSync(url.href);
+      expect(opened.prepare('SELECT count(*) AS n FROM t').get()).toEqual({ n: 1 });
+      opened.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the declared floor, the spec and this test in step', () => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(REPOSITORY_ROOT, 'package.json'), 'utf8'),
+    ) as { engines?: { node?: string } };
+    expect(manifest.engines?.node).toBe('>=22.15');
+    const spec = readFileSync(path.join(REPOSITORY_ROOT, 'docs/SPEC.md'), 'utf8');
+    expect(spec).toContain('Node ≥ 22.15');
   });
 });

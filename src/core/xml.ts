@@ -542,12 +542,32 @@ function extractSection(
     text: rendered.text,
     // Preserve the plain text and neutralize inline links, reference links,
     // images, raw HTML and angle-bracket autolinks in the Markdown output.
-    markdown: rendered.markdown
-      .replace(/^(\s{0,3})\[(?=[^\]]+\]:)/gm, '$1\\[')
-      .replace(/!\[/g, '!\\[')
-      .replace(/\]\(/g, ']\\(')
-      .replace(/<(?=[A-Za-z/!])/g, '&lt;'),
+    markdown: escapeMarkdownLinks(rendered.markdown),
   };
+}
+
+/**
+ * Neutralizes the Markdown constructs that would render as a link, an image
+ * or raw HTML, and leaves the plain text as written.
+ *
+ * The reference-definition opener is matched within the CommonMark label
+ * limit (999 characters). An unbounded lookahead would rescan the rest of
+ * the section at every line that starts with "[", which is quadratic on a
+ * large section of bare openers.
+ *
+ * The angle-bracket rule covers every character a CommonMark email autolink
+ * may start with, so "<1@example.com>" is neutralized like
+ * "<user@example.com>" is, while a "<" followed by a space stays as written.
+ *
+ * The transformation is idempotent, so the read path can apply it to a
+ * stored value that was indexed before these rules existed.
+ */
+export function escapeMarkdownLinks(markdown: string): string {
+  return markdown
+    .replace(/^(\s{0,3})\[(?=[^\]]{0,999}\]:)/gm, '$1\\[')
+    .replace(/!\[/g, '!\\[')
+    .replace(/\]\(/g, ']\\(')
+    .replace(/<(?=[A-Za-z0-9!#$%&'*+/=?^_`{|}.-])/g, '&lt;');
 }
 
 function walk(
